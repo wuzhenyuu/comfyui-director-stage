@@ -19,6 +19,7 @@ import { CameraManager, focalMMToVFov } from "./cameras.js";
 import { PropManager } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
+import { createModelLibraryPanel } from "./model-library.js";
 import { createCharPropsPanel } from "./char-props-panel.js";
 import { createSceneSettingsPanel } from "./scene-settings-panel.js";
 import { exportProject, importProject } from "./project-io.js";
@@ -33,6 +34,7 @@ const statusEl = document.getElementById("status");
 const charPanel = document.getElementById("char-panel");
 const cameraPanel = document.getElementById("camera-panel");
 const propsPanelEl = document.getElementById("props-panel");
+const modelLibraryPanel = document.getElementById("model-library-panel");
 const sidebarTabs = document.getElementById("sidebar-tabs");
 const charPropsPanelEl = document.getElementById("char-props-panel");
 const sceneSettingsPanelEl = document.getElementById("scene-settings-panel");
@@ -297,6 +299,10 @@ camPanelUI.refreshList();
 // 道具面板
 const propsPanelUI = createPropsPanel(propManager);
 propsPanelEl.appendChild(propsPanelUI);
+
+// 模型库面板
+const modelLibPanelUI = createModelLibraryPanel(propManager, showToast);
+modelLibraryPanel.appendChild(modelLibPanelUI);
 
 // 角色属性面板
 const charPropsUI = createCharPropsPanel();

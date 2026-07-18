@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "id": "ue-mannequin",
+      "name": "UE人体模型 (男)",
+      "file": "ue-mannequin-retopology.glb",
+      "description": "Unreal Engine 标准男性人体模型，含完整骨骼，约750KB。来源：Sketchfab (William Luque)，Sketchfab Standard License。",
+      "defaultScale": 1.8,
+      "autoGround": true
+    }
+  ]
+}

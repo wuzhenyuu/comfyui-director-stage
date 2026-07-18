@@ -57,6 +57,20 @@ try:
 except Exception as e:
     _log("警告：姿势库静态目录挂载失败（不影响节点本身加载）：%s" % e)
 
+# 把 assets/models（角色模型 GLB）挂载为静态目录：/director_stage/models
+try:
+    from server import PromptServer
+    from aiohttp import web
+
+    _models_dir = os.path.join(os.path.dirname(__file__), "assets", "models")
+    os.makedirs(_models_dir, exist_ok=True)
+    PromptServer.instance.app.add_routes(
+        [web.static("/director_stage/models", _models_dir)]
+    )
+    _log("模型库静态目录已挂载：/director_stage/models")
+except Exception as e:
+    _log("警告：模型库静态目录挂载失败（不影响节点本身加载）：%s" % e)
+
 
 def _cleanup_stale_uploads():
     """启动清理：删除 input/director_stage/ 下修改时间超过 7 天的 *.png。
