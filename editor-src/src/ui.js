@@ -1,5 +1,5 @@
 /**
- * ui.js — DOM 操作、视口自适应、状态栏
+ * ui.js — DOM 操作、视口自适应、状态栏、Toast、进度条
  */
 import { getCamera, getRenderer, getCanvasRect } from "./scene.js";
 import { updateOverlay } from "./camera-settings.js";
@@ -55,4 +55,65 @@ export function setStatus(msg, statusEl) {
  */
 export function getViewportEl() {
   return viewportEl;
+}
+
+/* ======================== M2: Toast ======================== */
+
+let toastTimer = null;
+
+/**
+ * 显示浮动 Toast 消息
+ * @param {string} msg
+ * @param {boolean} isError
+ */
+export function showToast(msg, isError = false) {
+  // Remove existing toast
+  const existing = document.getElementById("m2-toast");
+  if (existing) existing.remove();
+  if (toastTimer) clearTimeout(toastTimer);
+
+  const toast = document.createElement("div");
+  toast.id = "m2-toast";
+  toast.textContent = msg;
+  toast.style.cssText = [
+    "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;",
+    "padding:10px 22px;border-radius:8px;font-size:13px;",
+    "background:" + (isError ? "#b33" : "#2f9e63"),
+    "color:#fff;box-shadow:0 4px 16px rgba(0,0,0,0.5);",
+    "transition:opacity 0.3s;pointer-events:none;",
+  ].join("");
+  document.body.appendChild(toast);
+
+  toastTimer = setTimeout(() => {
+    toast.style.opacity = "0";
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+/* ======================== M2: Progress Bar ======================== */
+
+/**
+ * 显示进度条
+ * @param {string} msg
+ */
+export function showProgress(msg) {
+  let bar = document.getElementById("m2-progress");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "m2-progress";
+    bar.style.cssText = [
+      "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9998;",
+      "padding:8px 16px;border-radius:8px;font-size:13px;",
+      "background:#232836;color:#e6e9f0;border:1px solid #2a2f3d;",
+      "box-shadow:0 4px 16px rgba(0,0,0,0.5);pointer-events:none;",
+    ].join("");
+    document.body.appendChild(bar);
+  }
+  bar.textContent = msg;
+  bar.style.display = "block";
+}
+
+export function hideProgress() {
+  const bar = document.getElementById("m2-progress");
+  if (bar) bar.style.display = "none";
 }

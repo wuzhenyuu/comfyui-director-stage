@@ -95,4 +95,26 @@ export const MIRROR_MAP = {
 };
 
 // --------------- 场景序列化版本 ---------------
-export const SCENE_VERSION = 1;
+export const SCENE_VERSION = 2;
+
+// --------------- IK 链定义 ---------------
+// 四肢 IK 链配置（每链 3 个骨骼：根→中→末端，对应 COCO 关节索引）
+export const IK_CHAINS = {
+  leftArm:  { bones: [5, 6, 7],   maxIterations: 15, tolerance: 0.0005, name: "leftArm"  },  // LShoulder→LElbow→LWrist
+  rightArm: { bones: [2, 3, 4],   maxIterations: 15, tolerance: 0.0005, name: "rightArm" },  // RShoulder→RElbow→RWrist
+  leftLeg:  { bones: [11, 12, 13], maxIterations: 15, tolerance: 0.0005, name: "leftLeg"  },  // LHip→LKnee→LAnkle
+  rightLeg: { bones: [8, 9, 10],  maxIterations: 15, tolerance: 0.0005, name: "rightLeg" },  // RHip→RKnee→RAnkle
+};
+
+// 角色默认颜色（8 种循环使用）
+export const CHARACTER_COLORS = [
+  "#ff6b6b", "#4ecdc4", "#45b7d1", "#96ceb4",
+  "#ffeaa7", "#dfe6e9", "#fd79a8", "#a29bfe",
+];
+
+// 右侧暖色 / 左侧冷色关节色（用于 joint index → color）
+export const JOINT_COLOR_WARM = 0xff9966;   // 右侧暖色
+// 左右分组定义
+export const RIGHT_JOINTS = new Set([2, 3, 4, 8, 9, 10, 14, 16]);  // RShoulder,RElbow,RWrist,RHip,RKnee,RAnkle,REye,REar
+export const LEFT_JOINTS  = new Set([5, 6, 7, 11, 12, 13, 15, 17]); // LShoulder,LElbow,LWrist,LHip,LKnee,LAnkle,LEye,LEar
+// 中心关节（中性色）: 0 Nose, 1 Neck

@@ -1,0 +1,312 @@
+{
+  "last_node_id": 19,
+  "last_link_id": 32,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "DirectorStage",
+      "pos": [40, 120],
+      "size": [340, 140],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "openpose", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "depth", "type": "IMAGE", "links": [], "slot_index": 1},
+        {"name": "normal", "type": "IMAGE", "links": [], "slot_index": 2},
+        {"name": "lineart", "type": "IMAGE", "links": [], "slot_index": 3},
+        {"name": "char_masks", "type": "MASK", "links": [5, 6], "slot_index": 4},
+        {"name": "camera_json", "type": "STRING", "links": [], "slot_index": 5}
+      ],
+      "title": "🎬 3D导演台（双角色场景）",
+      "properties": {"Node name for S&R": "DirectorStage"},
+      "widgets_values": [1024, 1024, "", "{\"version\":2,\"cameras\":[{\"name\":\"Main\",\"files\":{\"openpose\":\"director_stage/placeholder.png\"},\"masks\":[{\"name\":\"角色A\",\"file\":\"director_stage/mask_a.png\"},{\"name\":\"角色B\",\"file\":\"director_stage/mask_b.png\"}]}]}"]
+    },
+    {
+      "id": 2,
+      "type": "CheckpointLoaderSimple",
+      "pos": [40, 320],
+      "size": [340, 100],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [2], "slot_index": 0},
+        {"name": "CLIP", "type": "CLIP", "links": [3, 4], "slot_index": 1},
+        {"name": "VAE", "type": "VAE", "links": [30], "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["sd_xl_base_1.0.safetensors"]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [440, 260],
+      "size": [400, 130],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 3}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [7], "slot_index": 0}
+      ],
+      "title": "全局基础提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["masterpiece, best quality, 2girls, standing in a garden, cherry blossoms, cinematic lighting, detailed background"]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [440, 410],
+      "size": [400, 130],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 4}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [8], "slot_index": 0}
+      ],
+      "title": "负向提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["lowres, bad anatomy, bad hands, extra limbs, missing limbs, watermark, text, blurry, ugly, deformed"]
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [440, 570],
+      "size": [400, 100],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": null}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [9], "slot_index": 0}
+      ],
+      "title": "角色A 分区提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["1girl, long black hair, red dress, elegant pose, looking left"]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [440, 690],
+      "size": [400, 100],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": null}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [10], "slot_index": 0}
+      ],
+      "title": "角色B 分区提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["1girl, short blonde hair, blue dress, smiling, looking right"]
+    },
+    {
+      "id": 7,
+      "type": "ControlNetLoader",
+      "pos": [440, 30],
+      "size": [400, 60],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CONTROL_NET", "type": "CONTROL_NET", "links": [11], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ControlNetLoader"},
+      "widgets_values": ["control-l-openpose-sdxl.safetensors"]
+    },
+    {
+      "id": 8,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [900, 110],
+      "size": [330, 190],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "positive", "type": "CONDITIONING", "link": 7},
+        {"name": "negative", "type": "CONDITIONING", "link": 8},
+        {"name": "control_net", "type": "CONTROL_NET", "link": 11},
+        {"name": "image", "type": "IMAGE", "link": 1}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [12], "slot_index": 0},
+        {"name": "negative", "type": "CONDITIONING", "links": [13], "slot_index": 1}
+      ],
+      "title": "ControlNet OpenPose（整体姿势）",
+      "properties": {"Node name for S&R": "ControlNetApplyAdvanced"},
+      "widgets_values": [0.95, 0.0, 1.0]
+    },
+    {
+      "id": 9,
+      "type": "RegionalPrompt",
+      "pos": [1300, 110],
+      "size": [350, 240],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "base_positive", "type": "CONDITIONING", "link": 12},
+        {"name": "base_negative", "type": "CONDITIONING", "link": 13},
+        {"name": "region_mask", "type": "MASK", "link": 5},
+        {"name": "region_prompt", "type": "CONDITIONING", "link": 9}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [14], "slot_index": 0},
+        {"name": "negative", "type": "CONDITIONING", "links": [], "slot_index": 1}
+      ],
+      "title": "RegionalPrompt 角色A",
+      "properties": {"Node name for S&R": "RegionalPrompt"},
+      "widgets_values": ["角色A", 0]
+    },
+    {
+      "id": 10,
+      "type": "RegionalPrompt",
+      "pos": [1300, 380],
+      "size": [350, 240],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "base_positive", "type": "CONDITIONING", "link": 14},
+        {"name": "base_negative", "type": "CONDITIONING", "link": null},
+        {"name": "region_mask", "type": "MASK", "link": 6},
+        {"name": "region_prompt", "type": "CONDITIONING", "link": 10}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [15], "slot_index": 0},
+        {"name": "negative", "type": "CONDITIONING", "links": [16], "slot_index": 1}
+      ],
+      "title": "RegionalPrompt 角色B（串联）",
+      "properties": {"Node name for S&R": "RegionalPrompt"},
+      "widgets_values": ["角色B", 1]
+    },
+    {
+      "id": 11,
+      "type": "EmptyLatentImage",
+      "pos": [900, 620],
+      "size": [330, 110],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [17], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "EmptyLatentImage"},
+      "widgets_values": [1024, 1024, 1]
+    },
+    {
+      "id": 12,
+      "type": "KSampler",
+      "pos": [1720, 260],
+      "size": [330, 270],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 2},
+        {"name": "positive", "type": "CONDITIONING", "link": 15},
+        {"name": "negative", "type": "CONDITIONING", "link": 16},
+        {"name": "latent_image", "type": "LATENT", "link": 17}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [18], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [0, "randomize", 25, 7.5, "euler", "normal", 1.0]
+    },
+    {
+      "id": 13,
+      "type": "VAEDecode",
+      "pos": [2110, 310],
+      "size": [210, 60],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 18},
+        {"name": "vae", "type": "VAE", "link": 30}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [19], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 14,
+      "type": "SaveImage",
+      "pos": [2370, 300],
+      "size": [340, 160],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 19}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["regional_mask_output"]
+    },
+    {
+      "id": 15,
+      "type": "Note",
+      "pos": [40, 30],
+      "size": [340, 60],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": ["M2 角色分区出图示例：DirectorStage 的 openpose + char_masks → OpenPose CN + RegionalPrompt 按 mask 分区提示。\n\n⚠️ RegionalPrompt 节点需要安装 comfyui_controlnet_aux 或 rgthree 插件。\n模型文件名为占位符，请替换为本地已有模型。"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 8, 3, "IMAGE"],
+    [2, 2, 0, 12, 0, "MODEL"],
+    [3, 2, 1, 3, 0, "CLIP"],
+    [4, 2, 1, 4, 0, "CLIP"],
+    [5, 1, 4, 9, 2, "MASK"],
+    [6, 1, 4, 10, 2, "MASK"],
+    [7, 3, 0, 8, 0, "CONDITIONING"],
+    [8, 4, 0, 8, 1, "CONDITIONING"],
+    [9, 5, 0, 9, 3, "CONDITIONING"],
+    [10, 6, 0, 10, 3, "CONDITIONING"],
+    [11, 7, 0, 8, 2, "CONTROL_NET"],
+    [12, 8, 0, 9, 0, "CONDITIONING"],
+    [13, 8, 1, 9, 1, "CONDITIONING"],
+    [14, 9, 0, 10, 0, "CONDITIONING"],
+    [15, 10, 0, 12, 1, "CONDITIONING"],
+    [16, 10, 1, 12, 2, "CONDITIONING"],
+    [17, 11, 0, 12, 3, "LATENT"],
+    [18, 12, 0, 13, 0, "LATENT"],
+    [19, 13, 0, 14, 0, "IMAGE"],
+    [30, 2, 2, 13, 1, "VAE"]
+  ],
+  "groups": [
+    {"title": "🎬 导演台（openpose + char_masks）", "bounding": [40, 30, 340, 250], "color": "#3f789e"},
+    {"title": "🧠 提示词（全局 + 角色A + 角色B + 负向）", "bounding": [440, 250, 400, 570], "color": "#e8a87c"},
+    {"title": "🎛️ ControlNet OpenPose", "bounding": [440, 20, 800, 300], "color": "#b8a9c9"},
+    {"title": "🎭 RegionalPrompt 角色分区", "bounding": [1300, 100, 350, 540], "color": "#d5a6bd"},
+    {"title": "🖼️ KSampler + VAE + 出图", "bounding": [1720, 250, 1000, 300], "color": "#90a955"}
+  ],
+  "config": {},
+  "extra": {
+    "workflow_info": "3D导演台 M2 角色分区出图示例：DirectorStage 的 openpose + char_masks → ControlNet OpenPose（整体姿势约束）+ RegionalPrompt（按 mask 区域分别注入角色提示词）→ KSampler 生成2角色场景。RegionalPrompt 需要安装 rgthree 或 comfyui_controlnet_aux 插件。模型文件名为占位符。"
+  },
+  "version": 0.4
+}

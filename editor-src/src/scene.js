@@ -75,3 +75,72 @@ export function getCanvasRect() {
   if (!renderer || !viewportEl) return null;
   return renderer.domElement.getBoundingClientRect();
 }
+
+/* ======================== M2 扩展 ======================== */
+
+/**
+ * 获取所有场景中的可视网格对象（用于渲染通道遍历）
+ */
+export function getAllSceneMeshObjects() {
+  const objects = [];
+  if (!scene) return objects;
+  scene.traverseVisible((child) => {
+    if (child.isMesh || child.isSkinnedMesh) {
+      objects.push(child);
+    }
+  });
+  return objects;
+}
+
+/**
+ * 更新相机引用（M2 用 CameraManager 替换默认相机时调用）
+ */
+export function setCamera(newCamera) {
+  camera = newCamera;
+}
+
+/**
+ * 设置线框模式（所有 Material wireframe）
+ */
+export function setWireframeMode(enabled) {
+  if (!scene) return;
+  scene.traverse((child) => {
+    if (child.isMesh && child.material && !child.userData._noWireframe) {
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m) => { m.wireframe = enabled; });
+      } else {
+        child.material.wireframe = enabled;
+      }
+    }
+  });
+}
+
+/**
+ * 获取当前所有角色组（从 DS_FigureAPI 或 fallback 到 M1 figureGroup）
+ * @returns {Array<{id:string, group:THREE.Group}>}
+ */
+export function getCharacterGroups() {
+  const groups = [];
+  if (!scene) return groups;
+
+  try {
+    if (window.DS_FigureAPI && window.DS_FigureAPI.getAllCharacters) {
+      const chars = window.DS_FigureAPI.getAllCharacters();
+      if (chars && typeof chars.forEach === "function") {
+        chars.forEach((ch, id) => {
+          const group = ch.skeletonGroup || ch.group || ch;
+          groups.push({ id: String(id), group });
+        });
+        return groups;
+      }
+    }
+  } catch (e) {
+    // DS_FigureAPI not ready
+  }
+
+  // Fallback: M1 single figureGroup
+  if (window.__ds && window.__ds.figureGroup) {
+    groups.push({ id: "char_01", group: window.__ds.figureGroup });
+  }
+  return groups;
+}

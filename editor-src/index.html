@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>3D导演台 M0</title>
+  <title>3D导演台 M2</title>
   <style>
     :root {
       --bg: #0b0d12;
@@ -50,6 +50,68 @@
     #btnApply { background: var(--accent); border-color: #37b573; }
     #hint { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #status { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+    /* ── 主区域 flex 布局 ── */
+    #main-area {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* ── 左侧边栏 ── */
+    #sidebar {
+      width: 230px;
+      flex: 0 0 auto;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #sidebar-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-tab {
+      flex: 1;
+      padding: 8px 4px;
+      text-align: center;
+      font-size: 12px;
+      cursor: pointer;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      border-bottom: 2px solid transparent;
+      transition: background 0.15s;
+    }
+    .sidebar-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .sidebar-tab:hover {
+      background: #232836;
+      filter: none;
+    }
+
+    #sidebar-panels {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+    .sidebar-panel {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      overflow-y: auto;
+      display: none;
+      flex-direction: column;
+    }
+    .sidebar-panel.active {
+      display: flex;
+    }
+
+    /* ── 视口 ── */
     #viewport {
       flex: 1 1 auto;
       min-height: 0;
@@ -57,19 +119,71 @@
       align-items: center;
       justify-content: center;
       background: var(--bg);
+      position: relative;
     }
     #viewport canvas { display: block; }
+
+    /* ── Toast ── */
+    #m2-toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9999;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    /* ── 相机面板 ── */
+    .cam-item {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .cam-item.active-cam {
+      background: #2f9e6340;
+    }
+    .cam-item:hover { background: #232836; }
+
+    .cam-actions {
+      padding: 4px 10px;
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border);
+    }
   </style>
 </head>
 <body>
   <div id="topbar">
-    <span id="title">🎬 3D导演台 M0</span>
+    <span id="title">🎬 3D导演台 M2</span>
     <button id="btnApply">✅ 应用到节点</button>
     <button id="btnCancel">❌ 取消</button>
     <span id="hint">左键选关节拖动 / 右键旋转视角 / 滚轮缩放</span>
     <span id="status"></span>
   </div>
-  <div id="viewport"></div>
+  <div id="main-area">
+    <div id="sidebar">
+      <div id="sidebar-tabs">
+        <button class="sidebar-tab active" data-panel="char-panel">🎭 角色</button>
+        <button class="sidebar-tab" data-panel="camera-panel">📷 机位</button>
+        <button class="sidebar-tab" data-panel="props-panel">🧱 道具</button>
+      </div>
+      <div id="sidebar-panels">
+        <div class="sidebar-panel active" id="char-panel"></div>
+        <div class="sidebar-panel" id="camera-panel"></div>
+        <div class="sidebar-panel" id="props-panel"></div>
+      </div>
+    </div>
+    <div id="viewport"></div>
+  </div>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

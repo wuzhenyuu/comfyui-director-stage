@@ -1,124 +1,16 @@
 /**
- * export.js — OpenPose / Depth 导出、上传到 ComfyUI、应用到节点
+ * export.js — 批量导出：多相机 × 多通道渲染 → 上传到 ComfyUI
+ *
+ * Manifest v2 格式:
+ * {
+ *   "version": 2,
+ *   "cameras": [{ "id", "name", "files": { openpose, depth, normal, lineart }, "width", "height", "focalMM", "pose": {pos,target} }],
+ *   "masks": [{ "charId", "cameraId", "file" }],
+ *   "sceneGz": "..."
+ * }
  */
-import * as THREE from "three";
-import { LIMB_SEQ, POSE_COLORS } from "./constants.js";
-import { getCamera, getRenderer, getScene, getSceneHelpers } from "./scene.js";
-
-/**
- * 渲染 OpenPose 骨骼图到 canvas（尺寸严格等于 w×h）
- */
-export function renderOpenPoseCanvas(joints, w, h) {
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, w, h);
-
-  const cam = getCamera();
-  cam.updateMatrixWorld();
-  const v = new THREE.Vector3();
-  const pts = joints.map((j) => {
-    j.getWorldPosition(v);
-    v.project(cam);
-    return [((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h];
-  });
-
-  const s = Math.min(w, h) / 512; // 线宽/半径随分辨率等比缩放
-  ctx.lineCap = "round";
-  LIMB_SEQ.forEach(([a, b], i) => {
-    const c = POSE_COLORS[i];
-    ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-    ctx.lineWidth = 4 * s;
-    ctx.beginPath();
-    ctx.moveTo(pts[a][0], pts[a][1]);
-    ctx.lineTo(pts[b][0], pts[b][1]);
-    ctx.stroke();
-  });
-  pts.forEach((p, j) => {
-    const c = POSE_COLORS[j];
-    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-    ctx.beginPath();
-    ctx.arc(p[0], p[1], 4 * s, 0, Math.PI * 2);
-    ctx.fill();
-  });
-  return cv;
-}
-
-const depthMat = new THREE.MeshDepthMaterial();
-
-/**
- * 渲染 Depth 图到 canvas（尺寸严格等于 w×h）
- */
-export function renderDepthCanvas(joints, w, h) {
-  const scene = getScene();
-  const renderer = getRenderer();
-  const cam = getCamera();
-  const { grid, axes } = getSceneHelpers();
-
-  // 1) 隐藏辅助物件
-  const prevGrid = grid.visible;
-  const prevAxes = axes.visible;
-  grid.visible = false;
-  axes.visible = false;
-
-  // 2) 调整 near/far
-  const prevBg = scene.background;
-  scene.background = new THREE.Color(0x000000);
-  const prevNear = cam.near;
-  const prevFar = cam.far;
-
-  const fwd = new THREE.Vector3();
-  cam.getWorldDirection(fwd);
-  const camPos = new THREE.Vector3();
-  cam.getWorldPosition(camPos);
-  let minD = Infinity;
-  let maxD = -Infinity;
-  const vt = new THREE.Vector3();
-  joints.forEach((j) => {
-    j.getWorldPosition(vt);
-    const d = vt.sub(camPos).dot(fwd);
-    if (d < minD) minD = d;
-    if (d > maxD) maxD = d;
-  });
-  cam.near = Math.max(0.05, minD - 0.5);
-  cam.far = Math.max(cam.near + 0.2, maxD + 0.5);
-  cam.updateProjectionMatrix();
-
-  // 3) 深度渲染到 RenderTarget（分辨率严格 w×h）
-  scene.overrideMaterial = depthMat;
-  const rt = new THREE.WebGLRenderTarget(w, h);
-  renderer.setRenderTarget(rt);
-  renderer.render(scene, cam);
-  const buf = new Uint8Array(w * h * 4);
-  renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
-  renderer.setRenderTarget(null);
-  rt.dispose();
-
-  // 4) 恢复
-  scene.overrideMaterial = null;
-  scene.background = prevBg;
-  cam.near = prevNear;
-  cam.far = prevFar;
-  cam.updateProjectionMatrix();
-  grid.visible = prevGrid;
-  axes.visible = prevAxes;
-
-  // 5) 像素上下翻转写入 canvas
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext("2d");
-  const img = ctx.createImageData(w, h);
-  const row = w * 4;
-  for (let y = 0; y < h; y++) {
-    img.data.set(buf.subarray((h - 1 - y) * row, (h - y) * row), y * row);
-  }
-  for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255;
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
+import { renderOpenPoseCanvas, renderOpenPoseCanvasMulti, renderDepthCanvas, renderNormalCanvas, renderLineartCanvas, renderCharacterMasks } from "./pass-renderer.js";
+import { getCamera as getSceneCamera, getRenderer, getScene, getSceneHelpers } from "./scene.js";
 
 function canvasToBlob(cv) {
   return new Promise((resolve, reject) => {
@@ -139,23 +31,270 @@ async function uploadCanvas(cv, filename) {
 }
 
 /**
- * 执行"应用到节点"
- * @param {THREE.Mesh[]} joints
- * @param {number} exportW
- * @param {number} exportH
- * @param {string} sceneGz
- * @returns {Promise<{manifest, sceneGz}>}
+ * 获取场景中所有需在渲染 pass 时隐藏的辅助对象
+ */
+function getHiddenObjects(propManager) {
+  const { grid, axes } = getSceneHelpers();
+  const hidden = [grid, axes];
+  // Hide prop gizmo
+  if (propManager) propManager.setGizmoVisible(false);
+  return hidden;
+}
+
+function restoreHiddenObjects(propManager) {
+  if (propManager) propManager.setGizmoVisible(true);
+}
+
+/**
+ * 执行批量导出
+ * @param {Object} opts
+ * @param {import("./cameras.js").CameraManager} opts.cameraManager
+ * @param {import("./props.js").PropManager} opts.propManager
+ * @param {THREE.Mesh[]} opts.joints — M1 单角色关节（向后兼容）
+ * @param {Function} opts.getSceneGz — () => string
+ * @param {number} opts.exportW
+ * @param {number} opts.exportH
+ * @param {Set<string>} opts.enabledPasses — e.g. new Set(["openpose","depth","normal","lineart","mask"])
+ * @param {Function} opts.onProgress — (msg: string) => void
+ * @param {Array<{id:string, group:THREE.Group}>} [opts.characters] — 多角色
+ * @returns {Promise<{manifest: object, sceneGz: string}>}
+ */
+export async function performBatchExport(opts) {
+  const {
+    cameraManager,
+    propManager,
+    joints,
+    getSceneGz,
+    exportW,
+    exportH,
+    enabledPasses,
+    onProgress,
+    characters = [],
+  } = opts;
+
+  const scene = getScene();
+  const renderer = getRenderer();
+  const hiddenObjects = getHiddenObjects(propManager);
+
+  const sceneGz = getSceneGz();
+  const t = Date.now();
+  const manifest = { version: 2, cameras: [], masks: [], sceneGz };
+
+  const allCameras = cameraManager.cameras;
+  let totalOps = 0;
+  let completedOps = 0;
+
+  // Count total operations
+  allCameras.forEach((camEntry) => {
+    enabledPasses.forEach((pass) => {
+      if (pass === "mask") {
+        totalOps += characters.length;
+      } else {
+        totalOps++;
+      }
+    });
+  });
+
+  function progress() {
+    completedOps++;
+    if (onProgress) {
+      onProgress(`导出中 ${completedOps}/${totalOps}…`);
+    }
+  }
+
+  try {
+    const savedCamId = cameraManager.getActiveCamera()?.id;
+
+    for (const camEntry of allCameras) {
+      // Switch to this camera for rendering
+      const cam = camEntry.camera;
+      cam.aspect = exportW / exportH;
+      cam.updateProjectionMatrix();
+
+      const camManifest = {
+        id: camEntry.id,
+        name: camEntry.name,
+        files: {},
+        width: exportW,
+        height: exportH,
+        focalMM: camEntry.focalMM,
+        pose: {
+          pos: cam.position.toArray(),
+          target: new THREE.Vector3(0, 1, 0).toArray(), // approximate target
+        },
+      };
+
+      // Compute render target from camera direction
+      const dir = new THREE.Vector3();
+      cam.getWorldDirection(dir);
+      const target = cam.position.clone().add(dir.multiplyScalar(3));
+      camManifest.pose.target = target.toArray();
+
+      // ─── OpenPose ───
+      if (enabledPasses.has("openpose")) {
+        let poseCv;
+        if (characters.length > 0) {
+          // Multi-character openpose
+          try {
+            const allJoints = [];
+            characters.forEach((ch) => {
+              // Get joints from DS_FigureAPI
+              if (window.DS_FigureAPI && window.DS_FigureAPI.getCharacterJoints) {
+                const jointData = window.DS_FigureAPI.getCharacterJoints(ch.id);
+                if (jointData) {
+                  const jointNames = ["Nose", "Neck", "RShoulder", "RElbow", "RWrist",
+                    "LShoulder", "LElbow", "LWrist", "RHip", "RKnee", "RAnkle",
+                    "LHip", "LKnee", "LAnkle", "REye", "LEye", "REar", "LEar"];
+                  const posArr = jointNames.map((n) => {
+                    const p = jointData[n];
+                    return p ? new THREE.Vector3(p[0], p[1], p[2]) : new THREE.Vector3();
+                  });
+                  allJoints.push({ id: ch.id, joints: posArr });
+                }
+              }
+            });
+            poseCv = renderOpenPoseCanvasMulti(allJoints, cam, exportW, exportH);
+          } catch (e) {
+            // Fallback: use M1 joints with the switched camera
+            poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
+          }
+        } else {
+          // M1 single character — use joints directly with this camera
+          poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
+        }
+        const filename = `director_pose_${camEntry.id}_${t}.png`;
+        camManifest.files.openpose = await uploadCanvas(poseCv, filename);
+        progress();
+      }
+
+      // ─── Depth ───
+      if (enabledPasses.has("depth")) {
+        const depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const filename = `director_depth_${camEntry.id}_${t}.png`;
+        camManifest.files.depth = await uploadCanvas(depthCv, filename);
+        progress();
+      }
+
+      // ─── Normal ───
+      if (enabledPasses.has("normal")) {
+        const normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const filename = `director_normal_${camEntry.id}_${t}.png`;
+        camManifest.files.normal = await uploadCanvas(normalCv, filename);
+        progress();
+      }
+
+      // ─── Lineart ───
+      if (enabledPasses.has("lineart")) {
+        // Need depth + normal for lineart; render them as intermediate
+        const depthCv2 = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const normalCv2 = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const lineartCv = renderLineartCanvas(depthCv2, normalCv2, exportW, exportH);
+        const filename = `director_lineart_${camEntry.id}_${t}.png`;
+        camManifest.files.lineart = await uploadCanvas(lineartCv, filename);
+        progress();
+      }
+
+      // ─── Character Masks ───
+      if (enabledPasses.has("mask") && characters.length > 0) {
+        const masks = renderCharacterMasks(scene, cam, renderer, exportW, exportH, characters, hiddenObjects);
+        for (const [charId, maskCv] of Object.entries(masks)) {
+          const filename = `director_mask_${charId}_${camEntry.id}_${t}.png`;
+          const maskPath = await uploadCanvas(maskCv, filename);
+          manifest.masks.push({ charId, cameraId: camEntry.id, file: maskPath });
+          progress();
+        }
+      }
+
+      manifest.cameras.push(camManifest);
+    }
+
+    // Restore active camera
+    if (savedCamId) {
+      cameraManager.switchCamera(savedCamId);
+    }
+
+  } finally {
+    restoreHiddenObjects(propManager);
+  }
+
+  return { manifest, sceneGz };
+}
+
+/**
+ * M1-style single-camera apply (backward compatible)
  */
 export async function performApply(joints, exportW, exportH, sceneGz) {
-  const poseCv = renderOpenPoseCanvas(joints, exportW, exportH);
-  const depthCv = renderDepthCanvas(joints, exportW, exportH);
+  const scene = getScene();
+  const renderer = getRenderer();
+  const cam = getSceneCamera();
+  const { grid, axes } = getSceneHelpers();
+
+  const prevGrid = grid.visible;
+  const prevAxes = axes.visible;
+  grid.visible = false;
+  axes.visible = false;
+
   const t = Date.now();
-  const openpose = await uploadCanvas(poseCv, `director_pose_${t}.png`);
-  const depth = await uploadCanvas(depthCv, `director_depth_${t}.png`);
-  const manifest = { files: { openpose, depth } };
+
+  const poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
+  const depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, []);
+  const normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, []);
+
+  // Lineart from depth+normal
+  const lineartCv = renderLineartCanvas(depthCv, normalCv, exportW, exportH);
+
+  grid.visible = prevGrid;
+  axes.visible = prevAxes;
+
+  const [openpose, depth, normal, lineart] = await Promise.all([
+    uploadCanvas(poseCv, `director_pose_${t}.png`),
+    uploadCanvas(depthCv, `director_depth_${t}.png`),
+    uploadCanvas(normalCv, `director_normal_${t}.png`),
+    uploadCanvas(lineartCv, `director_lineart_${t}.png`),
+  ]);
+
+  // M1 backward-compat: put files at top level AND include v2 cameras array
+  const manifest = {
+    version: 2,
+    files: { openpose, depth, normal, lineart },
+    cameras: [{
+      id: "cam_01",
+      name: "主镜头",
+      files: { openpose, depth, normal, lineart },
+      width: exportW,
+      height: exportH,
+      focalMM: 35,
+      pose: { pos: [0, 1.4, 3.2], target: [0, 1, 0] },
+    }],
+    masks: [],
+    sceneGz,
+  };
+
   window.parent.postMessage(
     { type: "exportDone", payload: { manifest, sceneGz } },
     "*"
   );
   return { manifest, sceneGz };
+}
+
+/**
+ * 向后兼容：M1 的老 export 函数（避免破坏 __ds 钩子）
+ */
+export function renderLegacyPoseCanvas(joints, w, h) {
+  const cam = getSceneCamera();
+  return renderOpenPoseCanvas(joints, cam, w, h);
+}
+
+export function renderLegacyDepthCanvas(joints, w, h) {
+  const scene = getScene();
+  const renderer = getRenderer();
+  const cam = getSceneCamera();
+  const { grid, axes } = getSceneHelpers();
+  const pg = grid.visible, pa = axes.visible;
+  grid.visible = false;
+  axes.visible = false;
+  const cv = renderDepthCanvas(scene, cam, renderer, w, h, []);
+  grid.visible = pg;
+  axes.visible = pa;
+  return cv;
 }

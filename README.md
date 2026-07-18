@@ -9,7 +9,7 @@
 - ✅ 前端编辑器以 iframe 方式打开，导出 PNG 上传至 `input/director_stage/`，文件清单写回节点 manifest
 - ✅ manifest 哈希参与缓存判定（场景没动就命中缓存）；文件缺失时输出空白图并打印警告，不中断队列
 
-### M1（本版新增）
+### M1
 - ✅ 3D 摆姿器：拖拽关节旋转人偶，手部含完整 21 点指骨
 - ✅ 子树联动：旋转躯干时手臂自动跟随（FK 链）
 - ✅ 骨长锁定：关节旋转不改变骨骼原始长度
@@ -18,6 +18,16 @@
 - ✅ 姿势库：`/director_stage/poses/` 路由提供 10 组预置姿势，编辑器内一键加载
 - ✅ 双通道导出：openpose + depth 同时渲染，分别走独立 ControlNet 串联出图
 - ✅ 启动自动清理：`input/director_stage/` 下超过 7 天的旧控制图自动删除
+
+### M2（本版新增）
+- ✅ DirectorStage 输出升级为 6 通道：`openpose` / `depth` / `normal` / `lineart` / `char_masks` / `camera_json`
+- ✅ M2 manifest 格式：`cameras[]` 数组 + `masks[]` 角色分区，向后兼容 M1 格式（`files` 顶层级）
+- ✅ `char_masks` 输出：[N, 1, H, W] MASK batch，每个角色 mask 灰度图堆叠，可直连 RegionalPrompt / AttentionCouple 等分区提示节点
+- ✅ `camera_json` 输出：当前机位的 `{pos, target, focalMM}` JSON 字符串，可用于动态构图参数传递
+- ✅ 新增 `🎬 3D导演台·单机位`（DirectorStageShot）：从 manifest 中读取指定 `camera_index` 的机位控制图
+- ✅ 多机位并联出图：一个场景配 N 个 DirectorStageShot 节点，每个独立走 ControlNet+KSampler，实现一次模板 N 张分镜
+- ✅ 角色 mask 区域提示：char_masks → RegionalPrompt 链式串联，不同角色区域注入独立提示词
+- ✅ 示例工作流：`multi_camera_storyboard.json`（3机位分镜）、`character_mask_regional.json`（角色分区出图）
 
 ## 安装
 
@@ -45,9 +55,12 @@
 |---|---|
 | `basic_openpose.json` | DirectorStage openpose 输出 → ControlNet OpenPose → SD1.5 文生图（单通道基础版） |
 | `dual_pose_depth.json` | openpose（强度 0.9）→ ControlNet OpenPose，depth（强度 0.5）→ ControlNet Depth，双通道串联出图 |
+| `multi_camera_storyboard.json` | **M2 多机位分镜**：1个DirectorStage(3机位场景)+3个DirectorStageShot(camera_index 0/1/2)→3路OpenPose CN→3张不同构图 |
+| `character_mask_regional.json` | **M2 角色分区出图**：DirectorStage的openpose+char_masks→OpenPose CN+RegionalPrompt按mask分区提示→双角色场景 |
 
 **使用前请注意**：
-- 工作流中的模型文件名为**占位符**（`v1-5-pruned-emaonly.safetensors`、`control_v11p_sd15_openpose.pth`、`control_v11f1p_sd15_depth.pth`），请替换为你本地 `ComfyUI/models/` 下已有的对应模型
+- 工作流中的模型文件名为**占位符**（`v1-5-pruned-emaonly.safetensors`、`control_v11p_sd15_openpose.pth`、`sd_xl_base_1.0.safetensors`、`control-l-openpose-sdxl.safetensors` 等），请替换为你本地 `ComfyUI/models/` 下已有的对应模型
+- `character_mask_regional.json` 需要安装 rgthree 或 comfyui_controlnet_aux 插件以使用 RegionalPrompt 节点
 - 加载工作流后，先打开导演台点击「✅ 应用」导出控制图，再 Queue 出图
 
 ## FAQ
@@ -63,6 +76,15 @@ A: 插件启动时会自动删除修改时间超过 7 天的 PNG 控制图，每
 
 **Q: 重启后场景还能恢复吗？**
 A: 可以。场景数据（scene_gz）随 workflow JSON 一起保存，重新打开工作流后再点「🎬 打开导演台」即可继续编辑。
+
+**Q: M2 格式的 manifest 和 M1 有什么区别？**
+A: M2（`version: 2`）使用 `cameras[]` 数组，每个相机包含 `files`（多通道控制图）+ `masks`（角色分区遮罩）+ `pos/target/focalMM` 相机参数。M1 格式（`files` 在顶层级）仍然兼容，但新通道（normal/lineart/char_masks/camera_json）会输出空白值。
+
+**Q: 多机位分镜怎么用？**
+A: 参考 `examples/multi_camera_storyboard.json`：先创建 DirectorStage 节点配好 3 机位场景，再用 3 个 DirectorStageShot 节点（camera_index=0/1/2）分别接 ControlNet+KSampler 并联出图。
+
+**Q: 角色分区提示怎么用？**
+A: 参考 `examples/character_mask_regional.json`：DirectorStage 的 `char_masks` 输出连到 RegionalPrompt 节点的 `region_mask`，配合各角色的独立提示词，实现不同区域不同描述。需要安装 rgthree 或 comfyui_controlnet_aux 插件。
 
 ## 许可
 
