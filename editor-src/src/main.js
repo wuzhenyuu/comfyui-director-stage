@@ -15,7 +15,7 @@ import { renderOpenPoseCanvas, renderDepthCanvas, renderNormalCanvas } from "./p
 import { setupProtocol, announceReady, getExportSize, getSceneJSON, setSceneJSON } from "./protocol.js";
 import { createPosePanel, loadPoseLibrary, mirrorPose, exportPoseJson } from "./pose-panel.js";
 import { applyViewport, setExportSize, getExportWH, setStatus, showToast, showProgress, hideProgress } from "./ui.js";
-import { CameraManager, focalMMToVFov } from "./cameras.js";
+import { CameraManager, focalMMToVFov, renderCameraListEntry } from "./cameras.js";
 import { PropManager } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
@@ -24,6 +24,9 @@ import { createCharPropsPanel } from "./char-props-panel.js";
 import { createSceneSettingsPanel } from "./scene-settings-panel.js";
 import { exportProject, importProject } from "./project-io.js";
 import "./clipboard.js";  // 注册 copyToClipboard/pasteFromClipboard 和键盘快捷键
+import { mountCameraGlobals } from "./cameras.js";
+import { mountControlsGlobals } from "./controls.js";
+import { mountThumbnailCapture } from "./thumbnail-capture.js";
 
 /* ========================= DOM 引用 ========================= */
 
@@ -68,15 +71,17 @@ updateBones(joints, bones);
 /* ========================= PropManager ========================= */
 
 const propManager = new PropManager(scene, defaultCamera, renderer.domElement);
-propManager.onDragChanged((dragging) => {
-  if (orbit) orbit.enabled = !dragging;
-});
 
 /* ========================= 交互 ========================= */
 
 let orbit = createOrbit(defaultCamera, renderer.domElement);
 const { tctrl } = createTransform(defaultCamera, renderer.domElement, scene);
 // M2: tctrl 会在下方 _dsRef 中通过 window.__ds 暴露给 figure.js
+
+// 注册拖拽回调（必须在 orbit 创建之后）
+propManager.onDragChanged((dragging) => {
+  orbit.enabled = !dragging;
+});
 setupPointerEvents(renderer.domElement, joints);
 setupKeyboardShortcuts(joints, () => {
   updateBones(joints, bones);
@@ -158,48 +163,44 @@ function createCameraPanel() {
     list.innerHTML = "";
     const activeId = cameraManager.getActiveCamera()?.id;
     cameraManager.cameras.forEach((cam) => {
-      const row = document.createElement("div");
-      row.style.cssText = [
-        "padding:6px 10px;cursor:pointer;font-size:12px;",
-        "display:flex;align-items:center;justify-content:space-between;",
-        "transition:background 0.15s;",
-      ].join("");
+      const isActive = cam.id === activeId;
+      const html = renderCameraListEntry(cam, isActive);
+      const tmp = document.createElement("div");
+      tmp.innerHTML = html;
+      const row = tmp.firstElementChild;
+      if (!row) return;
 
-      const nameEl = document.createElement("span");
-      nameEl.style.cssText = "display:flex;align-items:center;gap:4px;flex:1;";
-      nameEl.innerHTML = `📷 ${cam.name} <span style="color:#8a90a0;font-size:10px;">${cam.focalMM}mm</span>`;
-
-      const delBtn = document.createElement("button");
-      delBtn.textContent = "✕";
-      delBtn.title = "删除机位";
-      delBtn.style.cssText = "padding:2px 6px;font-size:10px;background:transparent;border:1px solid #2a2f3d;color:#8a90a0;";
-      delBtn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (cameraManager.removeCamera(cam.id)) {
-          syncActiveCamera();
-          refreshCameraList();
-        }
-      });
-
-      row.appendChild(nameEl);
-      row.appendChild(delBtn);
-
-      if (cam.id === activeId) {
-        row.style.background = "#2f9e6340";
-      }
-
-      row.addEventListener("mouseenter", () => {
-        if (cam.id !== activeId) row.style.background = "#232836";
-      });
-      row.addEventListener("mouseleave", () => {
-        if (cam.id !== activeId) row.style.background = (cam.id === activeId) ? "#2f9e6340" : "";
-      });
+      // 点击切换机位
       row.addEventListener("click", () => {
         cameraManager.switchCamera(cam.id);
         syncActiveCamera();
         refreshCameraList();
         showToast(`已切换到 ${cam.name}`, false);
+        // 切换后生成缩略图
+        setTimeout(() => {
+          if (window.__ds?.captureActiveThumbnail) window.__ds.captureActiveThumbnail();
+        }, 200);
       });
+
+      // 悬停效果
+      row.addEventListener("mouseenter", () => {
+        if (!isActive) row.style.background = "#232836";
+      });
+      row.addEventListener("mouseleave", () => {
+        if (!isActive) row.style.background = "";
+      });
+
+      // 删除按钮（匹配 renderCameraListEntry 的 data-remove-cam 属性）
+      const delBtn = row.querySelector("[data-remove-cam]");
+      if (delBtn) {
+        delBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (cameraManager.removeCamera(cam.id)) {
+            syncActiveCamera();
+            refreshCameraList();
+          }
+        });
+      }
 
       list.appendChild(row);
     });
@@ -832,6 +833,11 @@ const _dsRef = {
 };
 
 window.__ds = _dsRef;
+
+// === 挂载 ds_opt_a 提供的全局功能 ===
+mountCameraGlobals(orbit);     // window.__ds.togglePovMode
+mountControlsGlobals();        // window.__ds.setObjectLocked / isObjectLocked
+mountThumbnailCapture();       // window.__ds.captureActiveThumbnail
 
 /* ========================= 主循环 ========================= */
 

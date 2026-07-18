@@ -385,7 +385,7 @@ export function renderCameraListEntry(cam, isActive) {
  * 初始化 cameras.js 全局挂载
  * 由 main.js 在 CameraManager 创建后调用
  */
-export function mountCameraGlobals() {
+export function mountCameraGlobals(orbit) {
   if (!window.__ds) window.__ds = {};
 
   /**
@@ -397,6 +397,6 @@ export function mountCameraGlobals() {
       console.warn("[cameras] cameraManager 未就绪");
       return;
     }
-    cm.toggleViewMode(); // orbit 从 window.__ds__orbit 获取
+    cm.toggleViewMode(orbit);
   };
 }
