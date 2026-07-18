@@ -78,14 +78,14 @@ export class CharacterManager {
     for (const [chainName, chainDef] of Object.entries(IK_CHAINS)) {
       const chainBones = chainDef.bones.map((idx) => allBones[idx]);
 
-      // target 球（手/脚位置）
-      const targetGeo = new THREE.SphereGeometry(0.04, 20, 12);
+      // target 球（手/脚位置，更大更明显）
+      const targetGeo = new THREE.SphereGeometry(0.05, 24, 16);
       const targetMat = new THREE.MeshStandardMaterial({
         color: chainName.includes("Leg") ? 0xffcc44 : 0x44ccff,
-        roughness: 0.3,
-        metalness: 0.1,
-        emissive: chainName.includes("Leg") ? 0x442200 : 0x002244,
-        emissiveIntensity: 0.4,
+        roughness: 0.2,
+        metalness: 0.2,
+        emissive: chainName.includes("Leg") ? 0x664400 : 0x003366,
+        emissiveIntensity: 0.6,
       });
       const targetSphere = new THREE.Mesh(targetGeo, targetMat);
       targetSphere.name = `IK_Target_${id}_${chainName}`;
@@ -363,20 +363,22 @@ function createJointSpheresForCharacter(colorHex) {
   const group = new THREE.Group();
   const meshes = [];
 
-  const jointGeo = new THREE.SphereGeometry(0.03, 24, 16);
-  // 根据左右使用不同基础色
+  // M2 IK模式：关节球缩小到0.02（纯视觉指示器），IK targets变大到0.05（交互目标）
+  const jointGeo = new THREE.SphereGeometry(0.02, 24, 16);
   for (let i = 0; i < 18; i++) {
     let col;
-    if (RIGHT_JOINTS.has(i)) col = 0xff9966;       // 右侧暖色
-    else if (LEFT_JOINTS.has(i)) col = 0x6699ff;   // 左侧冷色
-    else col = 0xffffff;                           // 中心白
+    if (RIGHT_JOINTS.has(i)) col = 0xff9966;
+    else if (LEFT_JOINTS.has(i)) col = 0x6699ff;
+    else col = 0xffffff;
 
     const mat = new THREE.MeshStandardMaterial({
       color: col,
       roughness: 0.5,
       metalness: 0.05,
       emissive: col,
-      emissiveIntensity: 0.15,
+      emissiveIntensity: 0.08,
+      transparent: true,
+      opacity: 0.6,
     });
     const mesh = new THREE.Mesh(jointGeo, mat);
     mesh.position.set(T_POSE[i][0], T_POSE[i][1], T_POSE[i][2]);
@@ -480,6 +482,12 @@ export function updateBones(joints, bones) {
   if (!charManager) return;
   const char = charManager.active;
   if (!char) return;
+
+  // FK 模式：完全不运行 IK，允许自由拖拽关节（M1 兼容）
+  if (window.__ds?.fkMode) {
+    updateBoneMeshesFromSpheres(char.jointSpheres, char.boneMeshes);
+    return;
+  }
 
   // 关键修复：TransformControls 正在拖拽时，
   // 仅运行 IK solve（让 IK target 拖动实时反馈），

@@ -88,8 +88,13 @@ export function createModelLibraryPanel(propManager, onToast) {
     desc.style.cssText = "font-size:11px;color:#7a8090;line-height:1.4;";
     desc.textContent = model.description || "";
 
+    const pathEl = document.createElement("div");
+    pathEl.style.cssText = "font-size:10px;color:#4a5060;margin-top:2px;font-family:monospace;";
+    pathEl.textContent = `📁 assets/models/${model.file}`;
+
     card.appendChild(nameRow);
     card.appendChild(desc);
+    card.appendChild(pathEl);
     return card;
   }
 
