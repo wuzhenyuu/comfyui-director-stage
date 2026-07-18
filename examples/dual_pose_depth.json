@@ -1,0 +1,243 @@
+{
+  "last_node_id": 12,
+  "last_link_id": 19,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "DirectorStage",
+      "pos": [40, 120],
+      "size": [340, 140],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "openpose", "type": "IMAGE", "links": [7], "slot_index": 0},
+        {"name": "depth", "type": "IMAGE", "links": [10], "slot_index": 1}
+      ],
+      "title": "🎬 3D导演台",
+      "properties": {"Node name for S&R": "DirectorStage"},
+      "widgets_values": [1024, 1024, "", "{}"]
+    },
+    {
+      "id": 2,
+      "type": "CheckpointLoaderSimple",
+      "pos": [40, 360],
+      "size": [340, 100],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [1], "slot_index": 0},
+        {"name": "CLIP", "type": "CLIP", "links": [2, 3], "slot_index": 1},
+        {"name": "VAE", "type": "VAE", "links": [18], "slot_index": 2}
+      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["v1-5-pruned-emaonly.safetensors"]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [440, 320],
+      "size": [400, 160],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 2}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [4], "slot_index": 0}
+      ],
+      "title": "正向提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["masterpiece, best quality, 1girl, solo, full body, standing, simple background"]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [440, 530],
+      "size": [400, 160],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 3}
+      ],
+      "outputs": [
+        {"name": "CONDITIONING", "type": "CONDITIONING", "links": [5], "slot_index": 0}
+      ],
+      "title": "负向提示词",
+      "properties": {"Node name for S&R": "CLIPTextEncode"},
+      "widgets_values": ["lowres, bad anatomy, bad hands, extra limbs, missing limbs, watermark, text"]
+    },
+    {
+      "id": 5,
+      "type": "ControlNetLoader",
+      "pos": [440, 100],
+      "size": [400, 60],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CONTROL_NET", "type": "CONTROL_NET", "links": [6], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ControlNetLoader"},
+      "widgets_values": ["control_v11p_sd15_openpose.pth"]
+    },
+    {
+      "id": 6,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [900, 110],
+      "size": [330, 190],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "positive", "type": "CONDITIONING", "link": 4},
+        {"name": "negative", "type": "CONDITIONING", "link": 5},
+        {"name": "control_net", "type": "CONTROL_NET", "link": 6},
+        {"name": "image", "type": "IMAGE", "link": 7}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [8], "slot_index": 0},
+        {"name": "negative", "type": "CONDITIONING", "links": [9], "slot_index": 1}
+      ],
+      "title": "ControlNet 应用（OpenPose）",
+      "properties": {"Node name for S&R": "ControlNetApplyAdvanced"},
+      "widgets_values": [0.9, 0.0, 1.0]
+    },
+    {
+      "id": 7,
+      "type": "ControlNetLoader",
+      "pos": [440, 190],
+      "size": [400, 60],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CONTROL_NET", "type": "CONTROL_NET", "links": [11], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "ControlNetLoader"},
+      "widgets_values": ["control_v11f1p_sd15_depth.pth"]
+    },
+    {
+      "id": 8,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [1290, 140],
+      "size": [330, 190],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "positive", "type": "CONDITIONING", "link": 8},
+        {"name": "negative", "type": "CONDITIONING", "link": 9},
+        {"name": "control_net", "type": "CONTROL_NET", "link": 11},
+        {"name": "image", "type": "IMAGE", "link": 10}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [12], "slot_index": 0},
+        {"name": "negative", "type": "CONDITIONING", "links": [13], "slot_index": 1}
+      ],
+      "title": "ControlNet 应用（Depth）",
+      "properties": {"Node name for S&R": "ControlNetApplyAdvanced"},
+      "widgets_values": [0.5, 0.0, 1.0]
+    },
+    {
+      "id": 9,
+      "type": "EmptyLatentImage",
+      "pos": [1290, 460],
+      "size": [330, 110],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [14], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "EmptyLatentImage"},
+      "widgets_values": [1024, 1024, 1]
+    },
+    {
+      "id": 10,
+      "type": "KSampler",
+      "pos": [1680, 140],
+      "size": [330, 270],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "model", "type": "MODEL", "link": 1},
+        {"name": "positive", "type": "CONDITIONING", "link": 12},
+        {"name": "negative", "type": "CONDITIONING", "link": 13},
+        {"name": "latent_image", "type": "LATENT", "link": 14}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [15], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "KSampler"},
+      "widgets_values": [0, "randomize", 25, 7.0, "euler", "normal", 1.0]
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [2070, 170],
+      "size": [210, 60],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 15},
+        {"name": "vae", "type": "VAE", "link": 18}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [19], "slot_index": 0}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [2340, 170],
+      "size": [340, 300],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 19}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["DirectorStage_dual"]
+    }
+  ],
+  "links": [
+    [1, 2, 0, 10, 0, "MODEL"],
+    [2, 2, 1, 3, 0, "CLIP"],
+    [3, 2, 1, 4, 0, "CLIP"],
+    [4, 3, 0, 6, 0, "CONDITIONING"],
+    [5, 4, 0, 6, 1, "CONDITIONING"],
+    [6, 5, 0, 6, 2, "CONTROL_NET"],
+    [7, 1, 0, 6, 3, "IMAGE"],
+    [8, 6, 0, 8, 0, "CONDITIONING"],
+    [9, 6, 1, 8, 1, "CONDITIONING"],
+    [10, 1, 1, 8, 3, "IMAGE"],
+    [11, 7, 0, 8, 2, "CONTROL_NET"],
+    [12, 8, 0, 10, 1, "CONDITIONING"],
+    [13, 8, 1, 10, 2, "CONDITIONING"],
+    [14, 9, 0, 10, 3, "LATENT"],
+    [15, 10, 0, 11, 0, "LATENT"],
+    [18, 2, 2, 11, 1, "VAE"],
+    [19, 11, 0, 12, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "workflow_info": "3D导演台双通道示例：openpose(强度0.9)→depth(强度0.5) 双ControlNet串联 → SD1.5 文生图。模型文件名为占位符，请替换为本地已有模型；使用前先打开导演台点「✅ 应用」导出控制图。"
+  },
+  "version": 0.4
+}

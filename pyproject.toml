@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-director-stage"
+version = "0.2.0"
+description = "在 ComfyUI 里内嵌一个 3D 导演台：摆人偶姿势、搭场景、调机位，一键导出 OpenPose / Depth 控制图，直接接 ControlNet 出图。"
+license = "MIT"
+requires-python = ">=3.10"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "3D Director Stage"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

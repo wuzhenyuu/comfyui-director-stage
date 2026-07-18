@@ -1,411 +1,218 @@
+/**
+ * main.js — 3D导演台 M1 编排器
+ */
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { TransformControls } from "three/addons/controls/TransformControls.js";
-import { gzip, ungzip } from "pako";
+import { JOINT_CN, JOINT_EN, T_POSE } from "./constants.js";
+import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene } from "./scene.js";
+import { createJoints, createBones, updateBones } from "./figure.js";
+import {
+  createOrbit, createTransform, selectJoint, getSelected,
+  setupPointerEvents, setupKeyboardShortcuts, getOrbit, getTransform,
+  isBoneLockEnabled, setBoneLockEnabled,
+} from "./controls.js";
+import { pushUndo, performUndo, performRedo, getUndoDepth, getRedoDepth, snapshot, restore } from "./undo.js";
+import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints } from "./serialization.js";
+import * as cameraSettings from "./camera-settings.js";
+import { performApply, renderOpenPoseCanvas, renderDepthCanvas } from "./export.js";
+import { setupProtocol, announceReady, getExportSize } from "./protocol.js";
+import { createPosePanel, loadPoseLibrary, mirrorPose, exportPoseJson } from "./pose-panel.js";
+import { applyViewport, setExportSize, getExportWH, setStatus } from "./ui.js";
 
-/* ========================= 常量定义 ========================= */
-
-// COCO-18 关节顺序
-const JOINT_CN = [
-  "鼻", "颈", "右肩", "右肘", "右腕", "左肩", "左肘", "左腕",
-  "右髋", "右膝", "右踝", "左髋", "左膝", "左踝",
-  "右眼", "左眼", "右耳", "左耳",
-];
-
-// T-pose 默认坐标（米），COCO-18 顺序
-const T_POSE = [
-  [0.0, 1.62, 0.05],   // 0 Nose
-  [0.0, 1.45, 0.0],    // 1 Neck
-  [-0.18, 1.45, 0.0],  // 2 RShoulder
-  [-0.45, 1.45, 0.0],  // 3 RElbow
-  [-0.7, 1.45, 0.0],   // 4 RWrist
-  [0.18, 1.45, 0.0],   // 5 LShoulder
-  [0.45, 1.45, 0.0],   // 6 LElbow
-  [0.7, 1.45, 0.0],    // 7 LWrist
-  [-0.1, 0.95, 0.0],   // 8 RHip
-  [-0.11, 0.52, 0.0],  // 9 RKnee
-  [-0.12, 0.08, 0.0],  // 10 RAnkle
-  [0.1, 0.95, 0.0],    // 11 LHip
-  [0.11, 0.52, 0.0],   // 12 LKnee
-  [0.12, 0.08, 0.0],   // 13 LAnkle
-  [-0.03, 1.66, 0.07], // 14 REye
-  [0.03, 1.66, 0.07],  // 15 LEye
-  [-0.07, 1.64, 0.02], // 16 REar
-  [0.07, 1.64, 0.02],  // 17 LEar
-];
-
-// OpenPose limbSeq（0 基索引对）
-const LIMB_SEQ = [
-  [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7],
-  [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13],
-  [1, 0], [0, 14], [14, 16], [0, 15], [15, 17],
-];
-
-// OpenPose 18 色调色板
-const POSE_COLORS = [
-  [255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0],
-  [170, 255, 0], [85, 255, 0], [0, 255, 0], [0, 255, 85],
-  [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255],
-  [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255],
-  [255, 0, 170], [255, 0, 85],
-];
-
-const JOINT_COLOR = 0x4da6ff;
-const SELECT_COLOR = 0xffcc00;
-
-// 导出分辨率（由 init 消息覆盖）
-let exportW = 512;
-let exportH = 768;
-
-/* ========================= DOM ========================= */
+/* ========================= DOM 引用 ========================= */
 
 const viewportEl = document.getElementById("viewport");
 const btnApply = document.getElementById("btnApply");
 const btnCancel = document.getElementById("btnCancel");
 const statusEl = document.getElementById("status");
 
-function setStatus(msg) {
-  statusEl.textContent = msg ? `${msg}　|　导出 ${exportW}×${exportH}` : `导出 ${exportW}×${exportH}`;
-}
+/* ========================= 初始化渲染器/场景 ========================= */
 
-/* ========================= 渲染器 / 场景 ========================= */
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(window.devicePixelRatio || 1);
-viewportEl.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x14161c);
-
-const camera = new THREE.PerspectiveCamera(40, exportW / exportH, 0.1, 100);
-camera.position.set(0, 1.4, 3.2);
-camera.lookAt(0, 1, 0);
-
-const grid = new THREE.GridHelper(6, 12, 0x55607a, 0x262b38);
-scene.add(grid);
-const axes = new THREE.AxesHelper(0.6);
-scene.add(axes);
-
-scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x34322c, 1.1));
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
-dirLight.position.set(2.5, 4, 3);
-scene.add(dirLight);
-
-/* ========================= 轨道控制 ========================= */
-
-const orbit = new OrbitControls(camera, renderer.domElement);
-orbit.target.set(0, 1, 0);
-orbit.enableDamping = true;
-orbit.dampingFactor = 0.08;
-// 左键留给关节选取/拖动，右键旋转视角，中键平移
-orbit.mouseButtons = {
-  LEFT: null,
-  MIDDLE: THREE.MOUSE.PAN,
-  RIGHT: THREE.MOUSE.ROTATE,
-};
-orbit.update();
+const renderer = createRenderer();
+const scene = createScene();
+const camera = createCamera(cameraSettings.focalToVFovDeg(35), 1);
+mountRenderer(viewportEl);
 
 /* ========================= 火柴人 ========================= */
 
-const figure = new THREE.Group();
-scene.add(figure);
+const figureGroup = new THREE.Group();
+scene.add(figureGroup);
+const joints = createJoints(figureGroup);
+const bones = createBones(figureGroup);
+updateBones(joints, bones);
 
-const jointGeo = new THREE.SphereGeometry(0.035, 24, 16);
-const joints = T_POSE.map((p, i) => {
-  const mesh = new THREE.Mesh(
-    jointGeo,
-    new THREE.MeshStandardMaterial({ color: JOINT_COLOR, roughness: 0.5, metalness: 0.05 })
-  );
-  mesh.position.set(p[0], p[1], p[2]);
-  mesh.userData.index = i;
-  figure.add(mesh);
-  return mesh;
+/* ========================= 交互 ========================= */
+
+const orbit = createOrbit(camera, renderer.domElement);
+const { tctrl } = createTransform(camera, renderer.domElement, scene);
+setupPointerEvents(renderer.domElement, joints);
+setupKeyboardShortcuts(joints, () => {
+  updateBones(joints, bones);
+  updateStatus();
 });
 
-const boneGeo = new THREE.CylinderGeometry(0.012, 0.012, 1, 10, 1, true);
-const boneMat = new THREE.MeshStandardMaterial({ color: 0x9fb8cc, roughness: 0.6, metalness: 0.05 });
-const bones = LIMB_SEQ.map(() => {
-  const b = new THREE.Mesh(boneGeo, boneMat);
-  figure.add(b);
-  return b;
-});
+/* ========================= UI 控件注入 ========================= */
 
-const _va = new THREE.Vector3();
-const _vb = new THREE.Vector3();
-const _vd = new THREE.Vector3();
-const _up = new THREE.Vector3(0, 1, 0);
+function injectTopbarControls() {
+  document.getElementById("title").textContent = "🎬 3D导演台 M1";
 
-// 关节移动后实时更新连接圆柱（每帧调用，开销可忽略）
-function updateBones() {
-  for (let i = 0; i < LIMB_SEQ.length; i++) {
-    const [a, b] = LIMB_SEQ[i];
-    _va.copy(joints[a].position);
-    _vb.copy(joints[b].position);
-    const bone = bones[i];
-    bone.position.copy(_va).add(_vb).multiplyScalar(0.5);
-    _vd.copy(_vb).sub(_va);
-    const len = Math.max(_vd.length(), 1e-6);
-    bone.scale.set(1, len, 1);
-    bone.quaternion.setFromUnitVectors(_up, _vd.normalize());
-  }
-}
-updateBones();
+  const afterBtn = btnCancel;
 
-/* ========================= TransformControls ========================= */
+  // 焦距滑杆
+  const focalGroup = document.createElement("span");
+  focalGroup.style.cssText = "display:flex;align-items:center;gap:4px;margin:0 8px;";
+  const focalLabel = document.createElement("span");
+  focalLabel.textContent = "35mm";
+  focalLabel.style.cssText = "font-size:12px;color:#8a90a0;min-width:40px;text-align:right;";
+  const focalSlider = document.createElement("input");
+  focalSlider.type = "range";
+  focalSlider.min = "20";
+  focalSlider.max = "135";
+  focalSlider.value = "35";
+  focalSlider.style.cssText = "width:80px;accent-color:#2f9e63;";
+  focalSlider.addEventListener("input", () => {
+    cameraSettings.setFocalLength(parseInt(focalSlider.value, 10));
+    updateBones(joints, bones);
+    cameraSettings.updateOverlay();
+  });
+  focalGroup.appendChild(document.createTextNode("📷"));
+  focalGroup.appendChild(focalLabel);
+  focalGroup.appendChild(focalSlider);
 
-const tctrl = new TransformControls(camera, renderer.domElement);
-tctrl.setMode("translate");
-tctrl.setSize(0.65);
-tctrl.addEventListener("dragging-changed", (e) => {
-  orbit.enabled = !e.value;
-});
-// r169+ 需要把 helper 加入场景；旧版本 TransformControls 本身就是 Object3D
-const gizmo = typeof tctrl.getHelper === "function" ? tctrl.getHelper() : tctrl;
-scene.add(gizmo);
+  // 三分线
+  const thirdsLabel = document.createElement("label");
+  thirdsLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const thirdsCheckbox = document.createElement("input");
+  thirdsCheckbox.type = "checkbox";
+  thirdsCheckbox.style.cssText = "accent-color:#2f9e63;";
+  thirdsCheckbox.addEventListener("change", () => {
+    cameraSettings.setThirdsEnabled(thirdsCheckbox.checked);
+  });
+  thirdsLabel.appendChild(thirdsCheckbox);
+  thirdsLabel.appendChild(document.createTextNode("卌"));
 
-let selected = null;
-function selectJoint(joint) {
-  if (selected === joint) return;
-  if (selected) selected.material.color.setHex(JOINT_COLOR);
-  selected = joint;
-  if (joint) {
-    joint.material.color.setHex(SELECT_COLOR);
-    tctrl.attach(joint);
-    setStatus(`已选中：${JOINT_CN[joint.userData.index]}`);
-  } else {
-    tctrl.detach();
-    setStatus("");
-  }
-}
+  // 骨长锁定
+  const lockLabel = document.createElement("label");
+  lockLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const lockCheckbox = document.createElement("input");
+  lockCheckbox.type = "checkbox";
+  lockCheckbox.checked = true;
+  lockCheckbox.style.cssText = "accent-color:#2f9e63;";
+  lockCheckbox.addEventListener("change", () => {
+    setBoneLockEnabled(lockCheckbox.checked);
+  });
+  lockLabel.appendChild(lockCheckbox);
+  lockLabel.appendChild(document.createTextNode("🔒骨长"));
 
-/* ========================= 关节拾取 ========================= */
-
-const raycaster = new THREE.Raycaster();
-const pointerNdc = new THREE.Vector2();
-let downXY = null;
-
-function ndcFromEvent(e) {
-  const r = renderer.domElement.getBoundingClientRect();
-  pointerNdc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
-  pointerNdc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
-}
-
-renderer.domElement.addEventListener("pointerdown", (e) => {
-  if (e.button === 0) downXY = [e.clientX, e.clientY];
-});
-
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (e.button !== 0 || !downXY) return;
-  const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 5;
-  downXY = null;
-  // 拖动手势 / 正在拖 gizmo / 悬停在 gizmo 轴上时不做拾取
-  if (moved || tctrl.dragging || tctrl.axis) return;
-  ndcFromEvent(e);
-  raycaster.setFromCamera(pointerNdc, camera);
-  const hits = raycaster.intersectObjects(joints, false);
-  selectJoint(hits.length ? hits[0].object : null);
-});
-
-renderer.domElement.addEventListener("pointermove", (e) => {
-  if (tctrl.dragging) return;
-  ndcFromEvent(e);
-  raycaster.setFromCamera(pointerNdc, camera);
-  const hit = raycaster.intersectObjects(joints, false).length > 0;
-  renderer.domElement.style.cursor = hit ? "pointer" : "default";
-});
-
-/* ========================= 视口自适应（跟随导出画幅比例） ========================= */
-
-function applyViewport() {
-  const cw = viewportEl.clientWidth;
-  const ch = viewportEl.clientHeight;
-  if (cw <= 0 || ch <= 0) return;
-  const aspect = exportW / exportH;
-  let vw = cw;
-  let vh = Math.round(cw / aspect);
-  if (vh > ch) {
-    vh = ch;
-    vw = Math.round(ch * aspect);
-  }
-  renderer.setSize(vw, vh);
-  camera.aspect = exportW / exportH;
-  camera.updateProjectionMatrix();
-}
-window.addEventListener("resize", applyViewport);
-
-/* ========================= 场景序列化（sceneGz） ========================= */
-
-function encodeSceneGz() {
-  const arr = joints.map((j) => [
-    +j.position.x.toFixed(4),
-    +j.position.y.toFixed(4),
-    +j.position.z.toFixed(4),
-  ]);
-  const gz = gzip(JSON.stringify(arr));
-  let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < gz.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, gz.subarray(i, i + CHUNK));
-  }
-  return btoa(bin);
-}
-
-function decodeSceneGz(b64) {
-  const bin = atob(b64);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  const arr = JSON.parse(new TextDecoder().decode(ungzip(u8)));
-  if (!Array.isArray(arr)) throw new Error("sceneGz 内容不是数组");
-  arr.forEach((p, i) => {
-    if (joints[i] && Array.isArray(p) && p.length >= 3) {
-      joints[i].position.set(+p[0], +p[1], +p[2]);
+  // Undo/Redo 按钮
+  const undoBtn = document.createElement("button");
+  undoBtn.textContent = "↩️";
+  undoBtn.title = "撤销 Ctrl+Z";
+  undoBtn.style.cssText = "padding:6px 8px;font-size:14px;";
+  undoBtn.addEventListener("click", () => {
+    if (performUndo(joints)) {
+      updateBones(joints, bones);
+      cameraSettings.updateOverlay();
+      updateStatus();
     }
   });
-  updateBones();
+
+  const redoBtn = document.createElement("button");
+  redoBtn.textContent = "↪️";
+  redoBtn.title = "重做 Ctrl+Y";
+  redoBtn.style.cssText = "padding:6px 8px;font-size:14px;";
+  redoBtn.addEventListener("click", () => {
+    if (performRedo(joints)) {
+      updateBones(joints, bones);
+      cameraSettings.updateOverlay();
+      updateStatus();
+    }
+  });
+
+  afterBtn.insertAdjacentElement("afterend", redoBtn);
+  afterBtn.insertAdjacentElement("afterend", undoBtn);
+  afterBtn.insertAdjacentElement("afterend", lockLabel);
+  afterBtn.insertAdjacentElement("afterend", thirdsLabel);
+  afterBtn.insertAdjacentElement("afterend", focalGroup);
+
+  cameraSettings.bindUI(focalSlider, focalLabel, thirdsCheckbox);
+
+  document.getElementById("hint").textContent =
+    "左键选关节拖动 / 按住Alt拖=自由模式 / 右键旋转 / 滚轮缩放";
 }
 
-/* ========================= OpenPose 导出 ========================= */
+injectTopbarControls();
 
-function renderOpenPoseCanvas(w, h) {
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, w, h);
+/* ========================= 姿势库面板 ========================= */
 
-  camera.updateMatrixWorld();
-  const v = new THREE.Vector3();
-  const pts = joints.map((j) => {
-    j.getWorldPosition(v);
-    v.project(camera); // 相机 aspect == w/h，与预览一致
-    return [((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h];
-  });
+const mainArea = document.createElement("div");
+mainArea.style.cssText = "display:flex;flex:1;min-height:0;";
+viewportEl.remove();
+mainArea.appendChild(createPosePanel());
+mainArea.appendChild(viewportEl);
+document.body.appendChild(mainArea);
 
-  const s = h / 512; // 线宽/半径随分辨率等比缩放
-  ctx.lineCap = "round";
-  LIMB_SEQ.forEach(([a, b], i) => {
-    const c = POSE_COLORS[i];
-    ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-    ctx.lineWidth = 4 * s;
-    ctx.beginPath();
-    ctx.moveTo(pts[a][0], pts[a][1]);
-    ctx.lineTo(pts[b][0], pts[b][1]);
-    ctx.stroke();
-  });
-  pts.forEach((p, j) => {
-    const c = POSE_COLORS[j];
-    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
-    ctx.beginPath();
-    ctx.arc(p[0], p[1], 4 * s, 0, Math.PI * 2);
-    ctx.fill();
-  });
-  return cv;
-}
+loadPoseLibrary((poseArr) => {
+  pushUndo(joints);
+  restore(joints, poseArr);
+  updateBones(joints, bones);
+  cameraSettings.updateOverlay();
+  updateStatus();
+});
 
-/* ========================= Depth 导出 ========================= */
+document.getElementById("poseMirror").addEventListener("click", () => {
+  pushUndo(joints);
+  const mirrored = mirrorPose(joints);
+  restore(joints, mirrored);
+  updateBones(joints, bones);
+  cameraSettings.updateOverlay();
+  updateStatus();
+});
 
-const depthMat = new THREE.MeshDepthMaterial(); // BasicDepthPacking：近白远黑
+document.getElementById("poseExport").addEventListener("click", () => {
+  exportPoseJson(joints);
+});
 
-function renderDepthCanvas(w, h) {
-  // 1) 隐藏网格 / 坐标轴 / gizmo
-  const helpers = [grid, axes, gizmo];
-  const prevVisible = helpers.map((o) => o.visible);
-  helpers.forEach((o) => (o.visible = false));
+/* ========================= 构图叠加层 ========================= */
 
-  // 2) 背景置纯黑，near/far 收紧到人物包围盒前后各 0.5m
-  const prevBg = scene.background;
-  scene.background = new THREE.Color(0x000000);
-  const prevNear = camera.near;
-  const prevFar = camera.far;
+cameraSettings.createOverlay(viewportEl);
+window.addEventListener("resize", () => {
+  applyViewport(viewportEl);
+  cameraSettings.updateOverlay();
+});
+renderer.domElement.addEventListener("pointerup", () => {
+  setTimeout(() => cameraSettings.updateOverlay(), 100);
+});
 
-  const fwd = new THREE.Vector3();
-  camera.getWorldDirection(fwd);
-  const camPos = new THREE.Vector3();
-  camera.getWorldPosition(camPos);
-  let minD = Infinity;
-  let maxD = -Infinity;
-  const v = new THREE.Vector3();
-  joints.forEach((j) => {
-    j.getWorldPosition(v);
-    const d = v.sub(camPos).dot(fwd);
-    if (d < minD) minD = d;
-    if (d > maxD) maxD = d;
-  });
-  camera.near = Math.max(0.05, minD - 0.5);
-  camera.far = Math.max(camera.near + 0.2, maxD + 0.5);
-  camera.updateProjectionMatrix();
+/* ========================= postMessage 协议 ========================= */
 
-  // 3) 深度材质覆盖渲染到 w×h renderTarget
-  scene.overrideMaterial = depthMat;
-  const rt = new THREE.WebGLRenderTarget(w, h);
-  renderer.setRenderTarget(rt);
-  renderer.render(scene, camera);
-  const buf = new Uint8Array(w * h * 4);
-  renderer.readRenderTargetPixels(rt, 0, 0, w, h, buf);
-  renderer.setRenderTarget(null);
-  rt.dispose();
-
-  // 4) 全部恢复
-  scene.overrideMaterial = null;
-  scene.background = prevBg;
-  camera.near = prevNear;
-  camera.far = prevFar;
-  camera.updateProjectionMatrix();
-  helpers.forEach((o, i) => (o.visible = prevVisible[i]));
-
-  // 5) 像素上下翻转写入 2D canvas
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const ctx = cv.getContext("2d");
-  const img = ctx.createImageData(w, h);
-  const row = w * 4;
-  for (let y = 0; y < h; y++) {
-    img.data.set(buf.subarray((h - 1 - y) * row, (h - y) * row), y * row);
+setupProtocol((w, h, jointsArr) => {
+  setExportSize(w, h);
+  applyViewport(viewportEl);
+  if (jointsArr) {
+    sApplyJoints(joints, jointsArr);
   }
-  for (let i = 3; i < img.data.length; i += 4) img.data[i] = 255; // 强制不透明
-  ctx.putImageData(img, 0, 0);
-  return cv;
-}
+  updateBones(joints, bones);
+  cameraSettings.updateOverlay();
+  updateStatus();
+});
 
-/* ========================= 上传 / 应用 / 取消 ========================= */
+if (document.readyState === "complete") announceReady();
+else window.addEventListener("load", announceReady);
 
-function canvasToBlob(cv) {
-  return new Promise((resolve, reject) => {
-    cv.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob 失败"))), "image/png");
-  });
-}
-
-async function uploadCanvas(cv, filename) {
-  const blob = await canvasToBlob(cv);
-  const fd = new FormData();
-  fd.append("image", blob, filename);
-  fd.append("subfolder", "director_stage");
-  fd.append("type", "input");
-  const res = await fetch("/upload/image", { method: "POST", body: fd });
-  if (!res.ok) throw new Error(`上传失败 HTTP ${res.status}`);
-  const j = await res.json();
-  return (j.subfolder ? j.subfolder + "/" : "") + j.name;
-}
+/* ========================= 应用 / 取消 ========================= */
 
 async function onApply() {
   btnApply.disabled = true;
   btnCancel.disabled = true;
-  setStatus("正在导出并上传…");
+  setStatus("正在导出并上传…", statusEl);
   try {
-    const poseCv = renderOpenPoseCanvas(exportW, exportH);
-    const depthCv = renderDepthCanvas(exportW, exportH);
-    const t = Date.now();
-    const openpose = await uploadCanvas(poseCv, `director_pose_${t}.png`);
-    const depth = await uploadCanvas(depthCv, `director_depth_${t}.png`);
-    const manifest = { files: { openpose, depth } };
-    const sceneGz = encodeSceneGz();
-    window.parent.postMessage({ type: "exportDone", payload: { manifest, sceneGz } }, "*");
-    setStatus("✅ 已应用到节点");
+    const [ew, eh] = getExportWH();
+    const sceneGz = encodeSceneGz(joints, cameraSettings.getFocalLength());
+    await performApply(joints, ew, eh, sceneGz);
+    setStatus("✅ 已应用到节点", statusEl);
   } catch (err) {
     console.error("[3D导演台] 导出失败:", err);
-    setStatus(`❌ 导出失败：${err.message || err}`);
+    setStatus(`❌ 导出失败：${err.message || err}`, statusEl);
   } finally {
     btnApply.disabled = false;
     btnCancel.disabled = false;
@@ -417,55 +224,76 @@ btnCancel.addEventListener("click", () => {
   window.parent.postMessage({ type: "cancel" }, "*");
 });
 
-/* ========================= postMessage 协议 ========================= */
+/* ========================= 状态栏 ========================= */
 
-window.addEventListener("message", (ev) => {
-  const data = ev.data;
-  if (!data || data.type !== "init") return;
-  const p = data.payload || {};
-  const w = parseInt(p.width, 10);
-  const h = parseInt(p.height, 10);
-  if (w > 0 && h > 0) {
-    exportW = w;
-    exportH = h;
-  }
-  applyViewport();
-  if (p.sceneGz) {
-    try {
-      decodeSceneGz(p.sceneGz);
-    } catch (err) {
-      console.warn("[3D导演台] sceneGz 解析失败，使用默认 T-pose:", err);
-    }
-  }
-  setStatus("");
-});
-
-function announceReady() {
-  window.parent.postMessage({ type: "ready" }, "*");
+function updateStatus() {
+  const sel = getSelected();
+  const [ew, eh] = getExportWH();
+  const undoN = getUndoDepth();
+  let msg = "";
+  if (sel) msg = `已选中：${JOINT_CN[sel.userData.index]}`;
+  if (undoN > 0) msg += `　⎌${undoN}`;
+  setStatus(msg, statusEl);
 }
-if (document.readyState === "complete") announceReady();
-else window.addEventListener("load", announceReady);
 
 /* ========================= 调试/测试钩子 ========================= */
 
 window.__ds = {
   joints,
+  bones,
   camera,
-  renderOpenPoseCanvas,
-  renderDepthCanvas,
-  encodeSceneGz,
-  decodeSceneGz,
-  get exportSize() {
-    return [exportW, exportH];
+  scene,
+  renderer,
+  renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(joints, w, h),
+  renderDepthCanvas: (w, h) => renderDepthCanvas(joints, w, h),
+  encodeSceneGz: (fl) => encodeSceneGz(joints, fl || cameraSettings.getFocalLength()),
+  decodeSceneGz: (b64) => {
+    const result = decodeSceneGz(b64);
+    if (result) {
+      sApplyJoints(joints, result.joints);
+      if (result.focalLength !== undefined) {
+        cameraSettings.setFocalLength(result.focalLength);
+      }
+      updateBones(joints, bones);
+      return result;
+    }
+    return null;
+  },
+  get exportSize() { return getExportWH(); },
+  pushUndo: () => pushUndo(joints),
+  performUndo: () => {
+    const ok = performUndo(joints);
+    updateBones(joints, bones);
+    return ok;
+  },
+  performRedo: () => {
+    const ok = performRedo(joints);
+    updateBones(joints, bones);
+    return ok;
+  },
+  getUndoDepth,
+  getRedoDepth,
+  mirrorPose: () => mirrorPose(joints),
+  setFocalLength: (mm) => {
+    cameraSettings.setFocalLength(mm);
+    cameraSettings.updateOverlay();
+  },
+  getFocalLength: () => cameraSettings.getFocalLength(),
+  isBoneLockEnabled,
+  setBoneLockEnabled,
+  snapshot: () => snapshot(joints),
+  restore: (snap) => {
+    restore(joints, snap);
+    updateBones(joints, bones);
   },
 };
 
 /* ========================= 主循环 ========================= */
 
-applyViewport();
-setStatus("");
+applyViewport(viewportEl);
+updateStatus();
 renderer.setAnimationLoop(() => {
   orbit.update();
-  updateBones();
+  updateBones(joints, bones);
   renderer.render(scene, camera);
 });

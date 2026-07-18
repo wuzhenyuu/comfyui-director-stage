@@ -1,0 +1,54 @@
+{
+  "poses": [
+    {
+      "id": "stand",
+      "name": "自然站立",
+      "file": "stand.json"
+    },
+    {
+      "id": "walk",
+      "name": "行走",
+      "file": "walk.json"
+    },
+    {
+      "id": "run",
+      "name": "奔跑",
+      "file": "run.json"
+    },
+    {
+      "id": "sit",
+      "name": "坐姿",
+      "file": "sit.json"
+    },
+    {
+      "id": "jump",
+      "name": "跳跃",
+      "file": "jump.json"
+    },
+    {
+      "id": "wave",
+      "name": "挥手",
+      "file": "wave.json"
+    },
+    {
+      "id": "arms_crossed",
+      "name": "双手抱胸",
+      "file": "arms_crossed.json"
+    },
+    {
+      "id": "punch",
+      "name": "出拳",
+      "file": "punch.json"
+    },
+    {
+      "id": "kneel",
+      "name": "单膝跪地",
+      "file": "kneel.json"
+    },
+    {
+      "id": "lie",
+      "name": "仰躺",
+      "file": "lie.json"
+    }
+  ]
+}
