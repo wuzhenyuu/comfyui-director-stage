@@ -38,6 +38,30 @@ export const PrimitiveFactory = {
     mesh.name = "plane";
     return mesh;
   },
+
+  createTorus(r, tube, color) {
+    const geo = new THREE.TorusGeometry(r, tube, 16, 32);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.05 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = "torus";
+    return mesh;
+  },
+
+  createCone(r, h, color) {
+    const geo = new THREE.ConeGeometry(r, h, 32);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.05 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = "cone";
+    return mesh;
+  },
+
+  createPyramid(s, h, color) {
+    const geo = new THREE.ConeGeometry(s, h, 4);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.05 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = "pyramid";
+    return mesh;
+  },
 };
 
 /* ==================== PropManager ==================== */
@@ -241,6 +265,21 @@ export class PropManager {
         case "plane":
           mesh = PrimitiveFactory.createPlane(
             item.params.w || 1, item.params.h || 1, actualColor
+          );
+          break;
+        case "torus":
+          mesh = PrimitiveFactory.createTorus(
+            item.params.r || 0.5, item.params.tube || 0.15, actualColor
+          );
+          break;
+        case "cone":
+          mesh = PrimitiveFactory.createCone(
+            item.params.r || 0.3, item.params.h || 1.0, actualColor
+          );
+          break;
+        case "pyramid":
+          mesh = PrimitiveFactory.createPyramid(
+            item.params.s || 0.5, item.params.h || 0.8, actualColor
           );
           break;
         case "imported":

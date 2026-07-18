@@ -75,6 +75,8 @@ export function getBoneWorldPos(bone) {
   return pos;
 }
 
+export { updateBoneWorldMatrix };
+
 /**
  * CCD IK 求解器（单链）
  *

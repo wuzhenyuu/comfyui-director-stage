@@ -19,6 +19,10 @@ import { CameraManager, focalMMToVFov } from "./cameras.js";
 import { PropManager } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
+import { createCharPropsPanel } from "./char-props-panel.js";
+import { createSceneSettingsPanel } from "./scene-settings-panel.js";
+import { exportProject, importProject } from "./project-io.js";
+import "./clipboard.js";  // 注册 copyToClipboard/pasteFromClipboard 和键盘快捷键
 
 /* ========================= DOM 引用 ========================= */
 
@@ -30,6 +34,8 @@ const charPanel = document.getElementById("char-panel");
 const cameraPanel = document.getElementById("camera-panel");
 const propsPanelEl = document.getElementById("props-panel");
 const sidebarTabs = document.getElementById("sidebar-tabs");
+const charPropsPanelEl = document.getElementById("char-props-panel");
+const sceneSettingsPanelEl = document.getElementById("scene-settings-panel");
 
 /* ========================= 初始化渲染器/场景 ========================= */
 
@@ -68,6 +74,7 @@ propManager.onDragChanged((dragging) => {
 
 let orbit = createOrbit(defaultCamera, renderer.domElement);
 const { tctrl } = createTransform(defaultCamera, renderer.domElement, scene);
+// M2: tctrl 会在下方 _dsRef 中通过 window.__ds 暴露给 figure.js
 setupPointerEvents(renderer.domElement, joints);
 setupKeyboardShortcuts(joints, () => {
   updateBones(joints, bones);
@@ -200,18 +207,13 @@ function createCameraPanel() {
 function syncActiveCamera() {
   const ac = cameraManager.getActiveCamera();
   if (!ac) return;
-  // Copy active camera state FROM CameraManager TO the viewport camera (which orbit controls follows)
-  defaultCamera.position.copy(ac.camera.position);
-  defaultCamera.quaternion.copy(ac.camera.quaternion);
-  defaultCamera.fov = ac.camera.fov;
-  defaultCamera.aspect = ac.camera.aspect;
-  defaultCamera.updateProjectionMatrix();
-
-  // Update orbit target
-  if (ac.target && ac.target.length >= 3) {
-    orbit.target.fromArray(ac.target);
-  }
+  // 关键修复：将 orbit controls 直接关联到活动相机的 THREE.Camera 对象，
+  // 避免 defaultCamera ↔ CameraManager 双向同步反馈环
+  orbit.object = ac.camera;
+  orbit.target.copy(new THREE.Vector3().fromArray(ac.target));
   orbit.update();
+  // defaultCamera 渲染时用活动相机
+  defaultCamera.copy(ac.camera);
 }
 
 // Keyboard shortcut for camera switching
@@ -252,18 +254,33 @@ const posePanel = createPosePanel();
 charPanel.appendChild(posePanel);
 
 loadPoseLibrary((poseArr) => {
-  pushUndo(joints);
-  restore(joints, poseArr);
-  updateBones(joints, bones);
+  // M2 修复：使用 DS_FigureAPI.applyPoseToActive 将姿势同时应用到球体和骨骼
+  const api = window.DS_FigureAPI;
+  if (api && api.applyPoseToActive) {
+    pushUndo(null);
+    api.applyPoseToActive(poseArr);
+  } else {
+    // M1 降级
+    pushUndo(joints);
+    restore(joints, poseArr);
+    updateBones(joints, bones);
+  }
   cameraSettings.updateOverlay();
   updateStatus();
 });
 
 document.getElementById("poseMirror").addEventListener("click", () => {
-  pushUndo(joints);
-  const mirrored = mirrorPose(joints);
-  restore(joints, mirrored);
-  updateBones(joints, bones);
+  const api = window.DS_FigureAPI;
+  if (api && api.applyPoseToActive) {
+    pushUndo(null);
+    const mirrored = mirrorPose(window.__ds.joints);
+    api.applyPoseToActive(mirrored);
+  } else {
+    pushUndo(joints);
+    const mirrored = mirrorPose(joints);
+    restore(joints, mirrored);
+    updateBones(joints, bones);
+  }
   cameraSettings.updateOverlay();
   updateStatus();
 });
@@ -281,9 +298,19 @@ camPanelUI.refreshList();
 const propsPanelUI = createPropsPanel(propManager);
 propsPanelEl.appendChild(propsPanelUI);
 
+// 角色属性面板
+const charPropsUI = createCharPropsPanel();
+charPropsPanelEl.appendChild(charPropsUI.panel);
+
+// 场景设置面板
+const sceneSettingsUI = createSceneSettingsPanel();
+sceneSettingsPanelEl.appendChild(sceneSettingsUI.panel);
+
 function refreshAllPanels() {
   if (camPanelUI.refreshList) camPanelUI.refreshList();
   if (propsPanelUI.refreshList) propsPanelUI.refreshList();
+  if (charPropsUI.refresh) charPropsUI.refresh();
+  if (sceneSettingsUI.refresh) sceneSettingsUI.refresh();
 }
 
 /* ========================= 顶部栏 M2 控件 ========================= */
@@ -424,7 +451,68 @@ function injectTopbarControls() {
   // ── GLB 导入按钮 ──
   const { button: importBtn, fileInput } = createGLBImport(propManager, showToast);
 
+  // ── M2 新增：POV 切换 ──
+  const povBtn = document.createElement("button");
+  povBtn.id = "btnPov";
+  povBtn.textContent = "🎬导演视角";
+  povBtn.title = "切换导演/相机视角";
+  povBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  povBtn.addEventListener("click", () => {
+    try {
+      if (window.__ds?.togglePovMode) {
+        window.__ds.togglePovMode();
+      }
+    } catch (e) { console.warn("togglePovMode 不可用:", e); }
+    // 更新按钮文本
+    setTimeout(() => _updatePovButton(povBtn), 100);
+  });
+
+  // ── M2 新增：导出工程 ──
+  const exportProjBtn = document.createElement("button");
+  exportProjBtn.id = "btnExportProj";
+  exportProjBtn.textContent = "💾导出工程";
+  exportProjBtn.title = "导出工程 JSON 文件";
+  exportProjBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  exportProjBtn.addEventListener("click", () => {
+    window.__ds?.exportProject?.();
+  });
+
+  // ── M2 新增：导入工程 ──
+  const importProjBtn = document.createElement("button");
+  importProjBtn.id = "btnImportProj";
+  importProjBtn.textContent = "📂导入工程";
+  importProjBtn.title = "导入工程 JSON 文件（会清空当前场景）";
+  importProjBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  importProjBtn.addEventListener("click", () => {
+    window.__ds?.importProject?.();
+  });
+
+  // ── M2 新增：复制 ──
+  const copyBtn = document.createElement("button");
+  copyBtn.id = "btnCopy";
+  copyBtn.textContent = "📋复制";
+  copyBtn.title = "复制选中对象 Ctrl+C";
+  copyBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  copyBtn.addEventListener("click", () => {
+    window.__ds?.copyToClipboard?.();
+  });
+
+  // ── M2 新增：粘贴 ──
+  const pasteBtn = document.createElement("button");
+  pasteBtn.id = "btnPaste";
+  pasteBtn.textContent = "📌粘贴";
+  pasteBtn.title = "粘贴 Ctrl+V";
+  pasteBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  pasteBtn.addEventListener("click", () => {
+    window.__ds?.pasteFromClipboard?.();
+  });
+
   // Insert all after btnCancel
+  afterBtn.insertAdjacentElement("afterend", pasteBtn);
+  afterBtn.insertAdjacentElement("afterend", copyBtn);
+  afterBtn.insertAdjacentElement("afterend", importProjBtn);
+  afterBtn.insertAdjacentElement("afterend", exportProjBtn);
+  afterBtn.insertAdjacentElement("afterend", povBtn);
   afterBtn.insertAdjacentElement("afterend", importBtn);
   afterBtn.insertAdjacentElement("afterend", redoBtn);
   afterBtn.insertAdjacentElement("afterend", undoBtn);
@@ -444,6 +532,22 @@ function injectTopbarControls() {
     "左键选关节拖动 / Alt+拖=自由模式 / 右键旋转 / 滚轮缩放 / Ctrl+1~9切机位";
 }
 
+/**
+ * 更新 POV 按钮文本
+ */
+function _updatePovButton(btn) {
+  try {
+    const cam = window.__ds?.cameraManager;
+    if (cam && cam.viewMode === "camera") {
+      btn.textContent = "📷机位视角";
+    } else {
+      btn.textContent = "🎬导演视角";
+    }
+  } catch (e) {
+    btn.textContent = "🎬导演视角";
+  }
+}
+
 injectTopbarControls();
 
 /* ========================= 构图叠加层 ========================= */
@@ -458,6 +562,16 @@ renderer.domElement.addEventListener("pointerup", () => {
   setTimeout(() => cameraSettings.updateOverlay(), 100);
 });
 
+// 监听字符变更事件（来自 ds_opt_a 或 clipboard）
+window.addEventListener("ds-char-changed", () => {
+  refreshAllPanels();
+});
+
+// 监听工程加载事件（来自 project-io）
+window.addEventListener("ds-project-loaded", () => {
+  refreshAllPanels();
+});
+
 /* ========================= postMessage 协议 ========================= */
 
 setupProtocol((w, h, jointsArr) => {
@@ -468,9 +582,13 @@ setupProtocol((w, h, jointsArr) => {
   defaultCamera.updateProjectionMatrix();
 
   if (jointsArr) {
-    sApplyJoints(joints, jointsArr);
+    const curJointMeshes = _dsRef.joints;
+    sApplyJoints(curJointMeshes, jointsArr);
+    if (window.DS_FigureAPI?.applySpheresToBones) {
+      window.DS_FigureAPI.applySpheresToBones();
+    }
   }
-  updateBones(joints, bones);
+  updateBones(_dsRef.joints, _dsRef.bones);
   cameraSettings.updateOverlay();
   updateStatus();
 });
@@ -486,7 +604,8 @@ async function onApply() {
   setStatus("正在导出并上传…", statusEl);
   try {
     const [ew, eh] = getExportWH();
-    const sceneGz = encodeSceneGz(joints, cameraSettings.getFocalLength());
+    const curJoints = _dsRef.joints;
+    const sceneGz = encodeSceneGz(curJoints, cameraSettings.getFocalLength());
 
     // M2: batch export across all cameras
     const enabledPasses = new Set(["openpose", "depth", "normal", "lineart"]);
@@ -502,7 +621,7 @@ async function onApply() {
       const result = await performBatchExport({
         cameraManager,
         propManager,
-        joints,
+        get joints() { return _dsRef.joints; },
         getSceneGz: () => sceneGz,
         exportW: ew,
         exportH: eh,
@@ -565,18 +684,27 @@ function updateStatus() {
 
 /* ========================= 调试/测试钩子 ========================= */
 
-window.__ds = {
-  joints,
-  bones,
-  camera: defaultCamera,
-  figureGroup,
-  scene,
-  renderer,
-  cameraManager,
-  propManager,
+// M2 修复：__ds 应动态获取活动角色数据，而非缓存初始引用
+const _dsRef = {
+  get joints() {
+    const api = window.DS_FigureAPI;
+    const ch = api ? api.getActiveCharacter() : null;
+    return ch ? ch.jointSpheres : [];
+  },
+  get bones() {
+    const api = window.DS_FigureAPI;
+    const ch = api ? api.getActiveCharacter() : null;
+    return ch ? ch.boneMeshes : [];
+  },
+  get figureGroup() { return figureGroup; },
+  get scene() { return scene; },
+  get renderer() { return renderer; },
+  get cameraManager() { return cameraManager; },
+  get propManager() { return propManager; },
+  __tctrl: tctrl,      // 模块作用域的 tctrl 引用
 
   // M1 compat
-  renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(joints, defaultCamera, w, h),
+  renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(_dsRef.joints, defaultCamera, w, h),
   renderDepthCanvas: (w, h) => {
     const { grid, axes } = getScene().children.reduce((acc, c) => {
       if (c instanceof THREE.GridHelper) acc.grid = c;
@@ -606,34 +734,37 @@ window.__ds = {
     return cv;
   },
 
-  encodeSceneGz: (fl) => encodeSceneGz(joints, fl || cameraSettings.getFocalLength()),
+  encodeSceneGz: (fl) => encodeSceneGz(_dsRef.joints, fl || cameraSettings.getFocalLength()),
   decodeSceneGz: (b64) => {
     const result = decodeSceneGz(b64);
     if (result) {
-      sApplyJoints(joints, result.joints);
+      const curJoints = _dsRef.joints;
+      sApplyJoints(curJoints, result.joints);
       if (result.focalLength !== undefined) {
         cameraSettings.setFocalLength(result.focalLength);
       }
-      updateBones(joints, bones);
+      updateBones(curJoints, _dsRef.bones);
       return result;
     }
     return null;
   },
   get exportSize() { return getExportWH(); },
-  pushUndo: () => pushUndo(joints),
+  pushUndo: () => pushUndo(_dsRef.joints),
   performUndo: () => {
-    const ok = performUndo(joints);
-    updateBones(joints, bones);
+    const j = _dsRef.joints;
+    const ok = performUndo(j);
+    updateBones(j, _dsRef.bones);
     return ok;
   },
   performRedo: () => {
-    const ok = performRedo(joints);
-    updateBones(joints, bones);
+    const j = _dsRef.joints;
+    const ok = performRedo(j);
+    updateBones(j, _dsRef.bones);
     return ok;
   },
   getUndoDepth,
   getRedoDepth,
-  mirrorPose: () => mirrorPose(joints),
+  mirrorPose: () => mirrorPose(_dsRef.joints),
   setFocalLength: (mm) => {
     cameraSettings.setFocalLength(mm);
     const ac = cameraManager.getActiveCamera();
@@ -649,10 +780,10 @@ window.__ds = {
   getFocalLength: () => cameraSettings.getFocalLength(),
   isBoneLockEnabled,
   setBoneLockEnabled,
-  snapshot: () => snapshot(joints),
+  snapshot: () => snapshot(_dsRef.joints),
   restore: (snap) => {
-    restore(joints, snap);
-    updateBones(joints, bones);
+    restore(_dsRef.joints, snap);
+    updateBones(_dsRef.joints, _dsRef.bones);
   },
 
   // M2 hooks
@@ -676,14 +807,14 @@ window.__ds = {
   getPropCount: () => propManager.props.length,
   clearProps: () => { propManager.clear(); propsPanelUI.refreshList(); },
 
-  getSceneJSON: () => buildSceneJSON(encodeSceneGz(joints, cameraSettings.getFocalLength())),
+  getSceneJSON: () => buildSceneJSON(encodeSceneGz(_dsRef.joints, cameraSettings.getFocalLength())),
 
   // Batch export
   performBatchExport: (enabledPasses) => performBatchExport({
     cameraManager,
     propManager,
-    joints,
-    getSceneGz: () => encodeSceneGz(joints, cameraSettings.getFocalLength()),
+    get joints() { return _dsRef.joints; },
+    getSceneGz: () => encodeSceneGz(_dsRef.joints, cameraSettings.getFocalLength()),
     exportW: getExportWH()[0],
     exportH: getExportWH()[1],
     enabledPasses: new Set(enabledPasses || ["openpose", "depth", "normal", "lineart"]),
@@ -694,9 +825,7 @@ window.__ds = {
   wireframeMode: (enabled) => setWireframeMode(enabled),
 };
 
-function requireDynamic() {
-  // stub - props.js already imported
-}
+window.__ds = _dsRef;
 
 /* ========================= 主循环 ========================= */
 
@@ -704,15 +833,12 @@ applyViewport(viewportEl);
 updateStatus();
 renderer.setAnimationLoop(() => {
   orbit.update();
-  // Sync orbit-modified camera back to active camera entry
+  // 把 OrbitControls 的相机状态同步回 CameraManager（单向同步，无反馈环）
   const ac = cameraManager.getActiveCamera();
   if (ac) {
-    ac.camera.position.copy(defaultCamera.position);
-    ac.camera.quaternion.copy(defaultCamera.quaternion);
-    ac.camera.fov = defaultCamera.fov;
     ac.pos = ac.camera.position.toArray();
     ac.target = orbit.target.toArray();
   }
   updateBones(joints, bones);
-  renderer.render(scene, defaultCamera);
+  renderer.render(scene, ac ? ac.camera : defaultCamera);
 });

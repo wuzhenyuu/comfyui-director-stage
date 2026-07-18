@@ -86,11 +86,16 @@ function encodeSceneGzV2(manager, focalLength) {
     }
   }
 
+  // 收集场景设置（从全局 __ds.sceneSettings，由 scene-settings-panel 注入）
+  const sceneSettings = (typeof window !== "undefined" && window.__ds?.sceneSettings)
+    ? window.__ds.sceneSettings : null;
+
   const payload = {
     v: SCENE_VERSION,
     characters: chars,
     activeCharId: manager ? manager.activeCharacterId : null,
     focalLength,
+    scene: sceneSettings,
   };
 
   const gz = gzip(JSON.stringify(payload));

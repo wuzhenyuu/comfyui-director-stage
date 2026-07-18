@@ -18,10 +18,12 @@ export function createGLBImport(propManager, onToast) {
 
   const button = document.createElement("button");
   button.textContent = "📦 导入模型";
-  button.title = "导入 GLB/GLTF 模型";
+  button.title = "从本地选择 .glb 或 .gltf 3D模型文件导入场景";
   button.style.cssText = "padding:6px 12px;font-size:13px;";
 
   button.addEventListener("click", () => {
+    // 添加文件选择提示
+    onToast("请选择 .glb 或 .gltf 格式的3D模型文件（可从 Sketchfab / Poly Haven 等网站下载免费模型）", false);
     fileInput.value = "";
     fileInput.click();
   });

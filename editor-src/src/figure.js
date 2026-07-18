@@ -10,7 +10,7 @@ import {
   IK_CHAINS, CHARACTER_COLORS,
   RIGHT_JOINTS, LEFT_JOINTS,
 } from "./constants.js";
-import { createBoneHierarchy, solveCCDIK, getBoneWorldPos } from "./ik-solver.js";
+import { createBoneHierarchy, solveCCDIK, getBoneWorldPos, updateBoneWorldMatrix } from "./ik-solver.js";
 
 // ===================== 模块级状态 =====================
 let charManager = null;
@@ -481,11 +481,16 @@ export function updateBones(joints, bones) {
   const char = charManager.active;
   if (!char) return;
 
-  // 运行 IK + 同步
-  charManager.update(char);
+  // 关键修复：TransformControls 正在拖拽时，
+  // 仅运行 IK solve（让 IK target 拖动实时反馈），
+  // 但不同步骨骼→关节球（避免覆盖用户拖动）
+  const tctrl = window.__ds?.__tctrl;
+  if (tctrl && tctrl.dragging) {
+    _runIKOnly(char);
+    return;
+  }
 
-  // 把关节球重置到骨骼位置，更新骨圆柱
-  // (charManager.update 已经做了这些)
+  charManager.update(char);
 }
 
 // ===================== API 暴露 =====================
@@ -496,8 +501,10 @@ function exposeAPI() {
   window.DS_FigureAPI = {
     getActiveCharacter: () => charManager.active,
     getAllCharacters: () => charManager.characters,
+    getCharacterList: () => Array.from(charManager.characters.values()).map(c => ({id:c.id, name:c.name, color:c.color})),
     getCharacter: (id) => charManager.characters.get(id),
     createCharacter: (id, name) => charManager.create(id, name),
+    addCharacter: (name) => charManager.create(`char_${String(charManager.characters.size + 1).padStart(2,'0')}`, name),
     removeCharacter: (id) => charManager.remove(id),
     setActive: (id) => charManager.setActive(id),
     updateJointsFromSkeleton: (id) => {
@@ -508,10 +515,49 @@ function exposeAPI() {
     getCharacterJoints: (id) => charManager.getCharacterJoints(id),
     getCharacterCount: () => charManager.characters.size,
     getManager: () => charManager,
+    applySpheresToBones,
+    applyPoseToActive: (jointCoords) => {
+      const ch = charManager.active;
+      if (!ch) return;
+      for (let i = 0; i < 18 && i < jointCoords.length; i++) {
+        ch.jointSpheres[i].position.set(jointCoords[i][0], jointCoords[i][1], jointCoords[i][2]);
+      }
+      applySpheresToBones();
+    },
   };
 }
 
-/** 获取 CharacterManager（供其他模块使用） */
-export function getCharacterManager() {
-  return charManager;
+/**
+ * 仅运行 IK 求解，不把骨骼位置同步回关节球
+ */
+function _runIKOnly(char) {
+  const cm = charManager;
+  cm._applyFootPinning(char);
+  for (const [chainName, state] of Object.entries(char.ikState)) {
+    if (!state.enabled) continue;
+    const chainDef = IK_CHAINS[chainName];
+    if (!chainDef) continue;
+    const chainBones = chainDef.bones.map((idx) => char.allBones[idx]);
+    const targetWorldPos = state.target.position.clone();
+    const poleWorldPos = state.pole.position.clone();
+    solveCCDIK(chainBones, targetWorldPos, poleWorldPos, chainDef.maxIterations, chainDef.tolerance);
+  }
+  updateBoneMeshesFromSpheres(char.jointSpheres, char.boneMeshes);
+}
+
+/** 将关节球位置反向应用回骨骼 */
+export function applySpheresToBones() {
+  if (!charManager) return;
+  const char = charManager.active;
+  if (!char) return;
+  for (let i = 0; i < 18; i++) {
+    const pi = JOINT_PARENT[i];
+    if (pi === undefined) continue;
+    const bone = char.allBones[i];
+    const parentBone = char.allBones[pi];
+    const targetPos = char.jointSpheres[i].position.clone();
+    parentBone.worldToLocal(targetPos);
+    bone.position.copy(targetPos);
+  }
+  updateBoneWorldMatrix(char.allBones[1]);
 }

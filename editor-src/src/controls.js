@@ -1,6 +1,18 @@
 /**
  * controls.js — 交互控制：Orbit、Transform、关节选择、子树联动拖动、骨长锁定
  * M2: 增加 IK target 拖拽、角色切换键盘快捷键
+ * P1-A: 增加对象锁定系统 + 锁定检查
+ *
+ * 导出接口（供 main.js 调用）：
+ *   - createOrbit / createTransform / selectJoint / getSelected
+ *   - setupPointerEvents / setupKeyboardShortcuts
+ *   - getOrbit / getTransform / getTransformControls
+ *   - isBoneLockEnabled / setBoneLockEnabled
+ *   - setObjectLocked / isObjectLocked / mountControlsGlobals
+ *
+ * 挂载到 window.__ds：
+ *   - setObjectLocked(id, locked)  锁定 / 解锁角色或道具
+ *   - isObjectLocked(id)           查询锁定状态
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -17,6 +29,9 @@ let dragInitial = null;
 let dragJointIdx = -1;
 let boneLockEnabled = true;
 
+/** 运行时锁映射：id → true（角色 ID 或 prop ID，用于对象创建前的锁定标记） */
+const _lockedMap = new Map();
+
 const _tempV = new THREE.Vector3();
 
 /* ==================== OrbitControls ==================== */
@@ -32,6 +47,8 @@ export function createOrbit(camera, domElement) {
     RIGHT: THREE.MOUSE.ROTATE,
   };
   orbit.update();
+  // 暴露给 cameras.js 的 POV 切换使用
+  window.__ds__orbit = orbit;
   return orbit;
 }
 
@@ -101,6 +118,15 @@ function jointsSnapshot() {
 function onDragChanged(e) {
   orbit.enabled = !e.value;
   if (e.value) {
+    // 拖拽开始：检查选中对象是否锁定
+    if (selected && _isObjectLocked(selected)) {
+      // 锁定对象禁止拖拽 — 立即 detach 并清除选择
+      tctrl.detach();
+      selectJoint(null);
+      orbit.enabled = true;
+      return;
+    }
+
     // 拖动开始：压 undo 栈
     const api = window.DS_FigureAPI;
     if (api) {
@@ -252,6 +278,10 @@ export function setupPointerEvents(domElement) {
 
     if (hits.length) {
       const obj = hits[0].object;
+      // 锁定检查：如果对象或其所属角色被锁定，阻止选中
+      if (_isObjectLocked(obj)) {
+        return; // 不选中锁定对象
+      }
       if (obj.userData.ikType) {
         // IK target 或 pole：选中它以便 TransformControls 拖拽
         selectJoint(obj);
@@ -268,8 +298,13 @@ export function setupPointerEvents(domElement) {
     ndcFromEvent(e, domElement);
     raycaster.setFromCamera(pointerNdc, window.__ds.camera);
     const pickables = getPickableObjects();
-    const hit = raycaster.intersectObjects(pickables, false).length > 0;
-    domElement.style.cursor = hit ? "pointer" : "default";
+    const hits = raycaster.intersectObjects(pickables, false);
+    if (hits.length) {
+      const obj = hits[0].object;
+      domElement.style.cursor = _isObjectLocked(obj) ? "not-allowed" : "pointer";
+    } else {
+      domElement.style.cursor = "default";
+    }
   });
 }
 
@@ -339,4 +374,138 @@ export function getOrbit() {
 
 export function getTransform() {
   return tctrl;
+}
+
+export function getTransformControls() {
+  return tctrl;
+}
+
+/* ==================== 对象锁定系统 ==================== */
+
+/**
+ * 判断拾取对象是否被锁定
+ * - 关节球 / IK target：查所属角色 _locked 字段
+ * - 道具网格：查 propManager 中对应 entry 的 locked 字段
+ * - 直接标记：对象自身 _locked 属性
+ * @param {THREE.Object3D} obj
+ * @returns {boolean}
+ */
+function _isObjectLocked(obj) {
+  if (!obj) return false;
+
+  // 1. 对象自身 _locked 标记
+  if (obj._locked === true) return true;
+
+  // 2. 通过 userData 查找所属角色
+  const charId = obj.userData?.characterId;
+  if (charId) {
+    const api = window.DS_FigureAPI;
+    if (api) {
+      const ch = api.getCharacter ? api.getCharacter(charId) : null;
+      if (ch && ch._locked) return true;
+    }
+    if (_lockedMap.has(charId)) return true;
+  }
+
+  // 3. 通过 userData.propId 查找道具锁
+  const propId = obj.userData?.propId;
+  if (propId) {
+    const pm = window.__ds?.propManager;
+    if (pm) {
+      const prop = pm.props.find((p) => p.id === propId);
+      if (prop && prop.locked) return true;
+    }
+    if (_lockedMap.has(propId)) return true;
+  }
+
+  // 4. 兜底：查全局锁映射
+  const id = obj.userData?.propId || obj.userData?.characterId;
+  if (id && _lockedMap.has(id)) return true;
+
+  return false;
+}
+
+/**
+ * 设置对象锁定状态（角色或道具）
+ * @param {string} id - 角色 ID 或道具 ID
+ * @param {boolean} locked
+ */
+export function setObjectLocked(id, locked) {
+  if (!id) return;
+
+  // 1. 查角色
+  const api = window.DS_FigureAPI;
+  if (api && api.getCharacter) {
+    const ch = api.getCharacter(id);
+    if (ch) {
+      ch._locked = !!locked;
+      if (locked) _lockedMap.set(id, true);
+      else _lockedMap.delete(id);
+      return;
+    }
+  }
+
+  // 2. 查道具
+  const pm = window.__ds?.propManager;
+  if (pm) {
+    const prop = pm.props.find((p) => p.id === id);
+    if (prop) {
+      prop.locked = !!locked;
+      if (locked) _lockedMap.set(id, true);
+      else _lockedMap.delete(id);
+      return;
+    }
+  }
+
+  // 3. 只记录到全局映射（对象尚未创建但先置锁）
+  if (locked) {
+    _lockedMap.set(id, true);
+  } else {
+    _lockedMap.delete(id);
+  }
+}
+
+/**
+ * 查询对象锁定状态
+ * @param {string} id - 角色 ID 或道具 ID
+ * @returns {boolean}
+ */
+export function isObjectLocked(id) {
+  if (!id) return false;
+
+  // 查角色
+  const api = window.DS_FigureAPI;
+  if (api && api.getCharacter) {
+    const ch = api.getCharacter(id);
+    if (ch) return ch._locked === true || _lockedMap.has(id);
+  }
+
+  // 查道具
+  const pm = window.__ds?.propManager;
+  if (pm) {
+    const prop = pm.props.find((p) => p.id === id);
+    if (prop) return prop.locked === true || _lockedMap.has(id);
+  }
+
+  return _lockedMap.has(id);
+}
+
+/* ---- 挂载全局函数 ---- */
+
+export function mountControlsGlobals() {
+  if (!window.__ds) window.__ds = {};
+
+  /**
+   * 设置对象（角色/道具）锁定状态
+   * @param {string} id
+   * @param {boolean} locked
+   */
+  window.__ds.setObjectLocked = setObjectLocked;
+
+  /**
+   * 查询对象锁定状态
+   * @param {string} id
+   * @returns {boolean}
+   */
+  window.__ds.isObjectLocked = isObjectLocked;
 }

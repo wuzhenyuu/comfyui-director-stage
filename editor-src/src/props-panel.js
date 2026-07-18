@@ -58,6 +58,24 @@ export function createPropsPanel(propManager) {
     refreshList();
   }));
 
+  addRow.appendChild(addBtn("🔘环", "添加圆环", () => {
+    const mesh = PrimitiveFactory.createTorus(0.3, 0.1, randomColor());
+    propManager.addProp("圆环", "torus", mesh, { r: 0.3, tube: 0.1, color: mesh.material.color.getHex() });
+    refreshList();
+  }));
+
+  addRow.appendChild(addBtn("🔺锥", "添加圆锥", () => {
+    const mesh = PrimitiveFactory.createCone(0.3, 0.8, randomColor());
+    propManager.addProp("圆锥", "cone", mesh, { r: 0.3, h: 0.8, color: mesh.material.color.getHex() });
+    refreshList();
+  }));
+
+  addRow.appendChild(addBtn("🔶锥", "添加棱锥", () => {
+    const mesh = PrimitiveFactory.createPyramid(0.4, 0.8, randomColor());
+    propManager.addProp("棱锥", "pyramid", mesh, { s: 0.4, h: 0.8, color: mesh.material.color.getHex() });
+    refreshList();
+  }));
+
   panel.appendChild(addRow);
 
   // ── 颜色选择器 ──
@@ -155,7 +173,7 @@ export function createPropsPanel(propManager) {
   }
 
   function kindIcon(kind) {
-    const map = { box: "📦", sphere: "🔵", cylinder: "🥫", plane: "🟫", imported: "📥" };
+    const map = { box: "📦", sphere: "🔵", cylinder: "🥫", plane: "🟫", torus: "🔘", cone: "🔺", pyramid: "🔶", imported: "📥" };
     return map[kind] || "❓";
   }
 
