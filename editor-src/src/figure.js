@@ -531,6 +531,36 @@ function exposeAPI() {
         ch.jointSpheres[i].position.set(jointCoords[i][0], jointCoords[i][1], jointCoords[i][2]);
       }
       applySpheresToBones();
+
+      // 关键：同步 IK targets 到新的手脚位置，防止 IK 求解器拉回旧姿势
+      const wristR = ch.jointSpheres[4];   // COCO: RWrist=4
+      const wristL = ch.jointSpheres[7];   // LWrist=7
+      const ankleR = ch.jointSpheres[10];  // RAnkle=10
+      const ankleL = ch.jointSpheres[13];  // LAnkle=13
+      const elbowR = ch.jointSpheres[3];   // RElbow=3
+      const elbowL = ch.jointSpheres[6];   // LElbow=6
+      const kneeR = ch.jointSpheres[9];    // RKnee=9
+      const kneeL = ch.jointSpheres[12];   // LKnee=12
+
+      if (ch.ikState.rightArm) {
+        ch.ikState.rightArm.target.position.copy(wristR.position);
+        ch.ikState.rightArm.pole.position.copy(elbowR.position).add(new THREE.Vector3(0, 0, 0.3));
+      }
+      if (ch.ikState.leftArm) {
+        ch.ikState.leftArm.target.position.copy(wristL.position);
+        ch.ikState.leftArm.pole.position.copy(elbowL.position).add(new THREE.Vector3(0, 0, 0.3));
+      }
+      if (ch.ikState.rightLeg) {
+        ch.ikState.rightLeg.target.position.copy(ankleR.position);
+        ch.ikState.rightLeg.pole.position.copy(kneeR.position).add(new THREE.Vector3(0, 0, -0.3));
+      }
+      if (ch.ikState.leftLeg) {
+        ch.ikState.leftLeg.target.position.copy(ankleL.position);
+        ch.ikState.leftLeg.pole.position.copy(kneeL.position).add(new THREE.Vector3(0, 0, -0.3));
+      }
+
+      // 重置脚钉地基准，避免 pose 应用后根位移触发补偿
+      charManager._footPinInitialized = false;
     },
   };
 }
