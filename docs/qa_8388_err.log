@@ -1,0 +1,306 @@
+[32m[INFO][0m Adding extra search path checkpoints F:\sd.webui\webui\models\Stable-diffusion
+[32m[INFO][0m Adding extra search path configs F:\sd.webui\webui\models\Stable-diffusion
+[32m[INFO][0m Adding extra search path vae F:\sd.webui\webui\models\VAE
+[32m[INFO][0m Adding extra search path loras F:\sd.webui\webui\models\Lora
+[32m[INFO][0m Adding extra search path loras F:\sd.webui\webui\models\LyCORIS
+[32m[INFO][0m Adding extra search path upscale_models F:\sd.webui\webui\models\ESRGAN
+[32m[INFO][0m Adding extra search path upscale_models F:\sd.webui\webui\models\RealESRGAN
+[32m[INFO][0m Adding extra search path upscale_models F:\sd.webui\webui\models\SwinIR
+[32m[INFO][0m Adding extra search path embeddings F:\sd.webui\webui\embeddings
+[32m[INFO][0m Adding extra search path hypernetworks F:\sd.webui\webui\models\hypernetworks
+[32m[INFO][0m Adding extra search path controlnet F:\sd.webui\webui\models\ControlNet
+[32m[INFO][0m 
+Prestartup times for custom nodes:
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Easy-Use
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\rgthree-comfy
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-lumi-batcher
+[32m[INFO][0m    4.5 seconds: F:\comfyui\custom_nodes\ComfyUI-Manager
+[32m[INFO][0m 
+[32m[INFO][0m Found comfy_kitchen backend cuda: {'available': True, 'disabled': False, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope_split_half', 'apply_rope_split_half1', 'convrot_w4a4_linear', 'dequantize_convrot_w4a4_weight', 'dequantize_int8_convrot_weight', 'dequantize_int8_convrot_weight_dtype', 'dequantize_int8_simple', 'dequantize_int8_simple_dtype', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'gemv_awq_w4a16', 'int8_linear', 'prepare_int4_weight_for_int8_linear', 'quantize_and_rotate_rowwise', 'quantize_convrot_w4a4_weight', 'quantize_int8_convrot_weight', 'quantize_int8_rowwise', 'quantize_int8_tensorwise', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'quantize_svdquant_w4a4', 'rms_rope', 'rms_rope1', 'rms_rope_split_half', 'rms_rope_split_half1', 'scaled_mm_nvfp4', 'scaled_mm_svdquant_w4a4', 'stochastic_rounding_fp8']}
+[32m[INFO][0m Found comfy_kitchen backend triton: {'available': True, 'disabled': True, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope_split_half', 'apply_rope_split_half1', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'int8_linear', 'quantize_and_rotate_rowwise', 'quantize_int8_rowwise', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8']}
+[32m[INFO][0m Found comfy_kitchen backend eager: {'available': True, 'disabled': False, 'unavailable_reason': None, 'capabilities': ['adaln', 'apply_rope', 'apply_rope1', 'apply_rope_split_half', 'apply_rope_split_half1', 'convrot_w4a4_linear', 'dequantize_convrot_w4a4_weight', 'dequantize_int8_convrot_weight', 'dequantize_int8_convrot_weight_dtype', 'dequantize_int8_simple', 'dequantize_int8_simple_dtype', 'dequantize_mxfp8', 'dequantize_nvfp4', 'dequantize_per_tensor_fp8', 'gemv_awq_w4a16', 'int8_linear', 'prepare_int4_weight_for_int8_linear', 'quantize_and_rotate_rowwise', 'quantize_convrot_w4a4_weight', 'quantize_int8_convrot_weight', 'quantize_int8_rowwise', 'quantize_int8_tensorwise', 'quantize_mxfp8', 'quantize_nvfp4', 'quantize_per_tensor_fp8', 'quantize_svdquant_w4a4', 'rms_rope', 'rms_rope1', 'rms_rope_split_half', 'rms_rope_split_half1', 'scaled_mm_mxfp8', 'scaled_mm_nvfp4', 'scaled_mm_svdquant_w4a4', 'stochastic_rounding_fp8']}
+[32m[INFO][0m Checkpoint files will always be loaded safely.
+[32m[INFO][0m Total VRAM 65232 MB, total RAM 65232 MB
+[32m[INFO][0m pytorch version: 2.11.0+cu130
+[32m[INFO][0m Set vram state to: DISABLED
+[32m[INFO][0m Device: cpu
+[32m[INFO][0m Using sub quadratic optimization for attention, if you have memory or speed issues try using: --use-split-cross-attention
+[32m[INFO][0m Python version: 3.12.8 (tags/v3.12.8:2dc476b, Dec  3 2024, 19:30:04) [MSC v.1942 64 bit (AMD64)]
+[32m[INFO][0m ComfyUI version: 0.28.0
+[32m[INFO][0m comfy-aimdo version: 0.4.10
+[32m[INFO][0m comfy-kitchen version: 0.2.20
+[32m[INFO][0m comfyui-frontend-package version: 1.45.21
+[32m[INFO][0m comfyui-workflow-templates version: 0.11.9
+[32m[INFO][0m comfyui-embedded-docs version: 0.5.8
+[32m[INFO][0m comfy-kitchen version: 0.2.20
+[32m[INFO][0m comfy-aimdo version: 0.4.10
+[32m[INFO][0m [Prompt Server] web root: F:\comfyui\venv\Lib\site-packages\comfyui_frontend_package\static
+[32m[INFO][0m Asset seeder disabled
+[32m[INFO][0m No OpenGL_accelerate module loaded: Acceleration disabled
+[32m[INFO][0m Note: NumExpr detected 32 cores but "NUMEXPR_MAX_THREADS" not set, so enforcing safe limit of 16.
+[32m[INFO][0m NumExpr defaulting to 16 threads.
+W0719 04:41:35.106000 44748 venv\Lib\site-packages\torch\distributed\elastic\multiprocessing\redirects.py:29] NOTE: Redirects are currently not supported in Windows or MacOs.
+Multiple distributions found for package optimum. Picked distribution: optimum
+[1m[33m[WARNING][0m Could not find the bitsandbytes CUDA binary at WindowsPath('F:/comfyui/venv/Lib/site-packages/bitsandbytes/libbitsandbytes_cuda130.dll')
+[1m[33m[WARNING][0m The installed version of bitsandbytes was compiled without GPU support. 8-bit optimizers, 8-bit multiplication, and GPU quantization are unavailable.
+[36;20m[custom_nodes.comfyui_controlnet_aux] | INFO -> Using ckpts path: F:\comfyui\custom_nodes\comfyui_controlnet_aux\ckpts[0m
+[36;20m[custom_nodes.comfyui_controlnet_aux] | INFO -> Using symlinks: False[0m
+[36;20m[custom_nodes.comfyui_controlnet_aux] | INFO -> Using ort providers: ['CUDAExecutionProvider', 'DirectMLExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'CPUExecutionProvider', 'CoreMLExecutionProvider'][0m
+[32m[INFO][0m ### Loading: ComfyUI-Impact-Pack (V8.28.3)
+[32m[INFO][0m ### Loading: ComfyUI-Impact-Pack (V8.28.3)
+[32m[INFO][0m [Impact Pack] Wildcard total size (0.00 MB) is within cache limit (50.00 MB). Using full cache mode.
+[32m[INFO][0m [Impact Pack] Wildcards loading done.
+[32m[INFO][0m [Impact Pack] Wildcard total size (0.00 MB) is within cache limit (50.00 MB). Using full cache mode.
+[32m[INFO][0m [Impact Pack] Wildcards loading done.
+[1m[33m[WARNING][0m F:\comfyui\venv\Lib\site-packages\transformers\models\auto\image_processing_auto.py:647: FutureWarning: The image_processor_class argument is deprecated and will be removed in v4.42. Please use `slow_image_processor_class`, or `fast_image_processor_class` instead
+  warnings.warn(
+
+[1m[33m[WARNING][0m xFormers not available
+[1m[33m[WARNING][0m xFormers not available
+[32m[INFO][0m ComfyUI-GGUF: Allowing full torch compile
+[1m[33m[WARNING][0m F:\comfyui\venv\Lib\site-packages\timm\models\layers\__init__.py:48: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+
+[1m[33m[WARNING][0m F:\comfyui\venv\Lib\site-packages\timm\models\registry.py:4: FutureWarning: Importing from timm.models.registry is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+
+[1m[33m[WARNING][0m F:\comfyui\venv\Lib\site-packages\timm\models\helpers.py:7: FutureWarning: Importing from timm.models.helpers is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+
+[32m[INFO][0m Total VRAM 65232 MB, total RAM 65232 MB
+[32m[INFO][0m pytorch version: 2.11.0+cu130
+[32m[INFO][0m Set vram state to: DISABLED
+[32m[INFO][0m Device: cpu
+[32m[INFO][0m set VIDEO_TOTAL_PIXELS: 90316800
+[32m[INFO][0m ### Loading: ComfyUI-Impact-Pack (V8.28.3)
+[32m[INFO][0m [Impact Pack] Wildcard total size (0.00 MB) is within cache limit (50.00 MB). Using full cache mode.
+[32m[INFO][0m [Impact Pack] Wildcards loading done.
+[32m[INFO][0m ### Loading: ComfyUI-Impact-Subpack (V1.3.5)
+[32m[INFO][0m [Impact Pack/Subpack] Using folder_paths to determine whitelist path: F:\comfyui\user\default\ComfyUI-Impact-Subpack\model-whitelist.txt
+[32m[INFO][0m [Impact Pack/Subpack] Ensured whitelist directory exists: F:\comfyui\user\default\ComfyUI-Impact-Subpack
+[32m[INFO][0m [Impact Pack/Subpack] Loaded 0 model(s) from whitelist: F:\comfyui\user\default\ComfyUI-Impact-Subpack\model-whitelist.txt
+[32m[INFO][0m [Impact Subpack] ultralytics_bbox: F:\comfyui\models\ultralytics\bbox
+[32m[INFO][0m [Impact Subpack] ultralytics_segm: F:\comfyui\models\ultralytics\segm
+[32m[INFO][0m ### Loading: ComfyUI-Inspire-Pack (V1.23)
+[1m[33m[WARNING][0m F:\comfyui\venv\Lib\site-packages\transformers\models\auto\image_processing_auto.py:647: FutureWarning: The image_processor_class argument is deprecated and will be removed in v4.42. Please use `slow_image_processor_class`, or `fast_image_processor_class` instead
+  warnings.warn(
+
+[32m[INFO][0m ### Loading: ComfyUI-Manager (V3.41)
+[32m[INFO][0m [ComfyUI-Manager] network_mode: public
+[32m[INFO][0m [ComfyUI-Manager] ComfyUI per-queue preview override detected (PR #11261). Manager's preview method feature is disabled. Use ComfyUI's --preview-method CLI option or 'Settings > Execution > Live preview method'.
+[32m[INFO][0m ### ComfyUI Version: v0.28.0-4-g03978e1e | Released on '2026-07-15'
+[32m[INFO][0m --------------
+[32m[INFO][0m [91m ### Mixlab Nodes: [93mLoaded
+[32m[INFO][0m ChatGPT.available True
+[32m[INFO][0m edit_mask.available True
+[32m[INFO][0m [ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/alter-list.json
+[32m[INFO][0m ClipInterrogator.available True
+[32m[INFO][0m PromptGenerate.available True
+[32m[INFO][0m ChinesePrompt.available True
+[32m[INFO][0m RembgNode_.available True
+[32m[INFO][0m [ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/model-list.json
+[32m[INFO][0m [ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/extension-node-map.json
+[32m[INFO][0m [ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/custom-node-list.json
+[32m[INFO][0m [ComfyUI-Manager] default cache updated: https://raw.githubusercontent.com/ltdrdata/ComfyUI-Manager/main/github-stats.json
+[32m[INFO][0m TripoSR.available
+[32m[INFO][0m MiniCPMNode.available
+[32m[INFO][0m Scenedetect.available
+[32m[INFO][0m FishSpeech.available
+[32m[INFO][0m SenseVoice.available
+[32m[INFO][0m Whisper.available False
+[32m[INFO][0m FalVideo.available
+[32m[INFO][0m [93m -------------- [0m
+[36;20m[F:\comfyui\custom_nodes\comfyui_controlnet_aux] | INFO -> Using ckpts path: F:\comfyui\custom_nodes\comfyui_controlnet_aux\ckpts[0m
+[36;20m[F:\comfyui\custom_nodes\comfyui_controlnet_aux] | INFO -> Using symlinks: False[0m
+[36;20m[F:\comfyui\custom_nodes\comfyui_controlnet_aux] | INFO -> Using ort providers: ['CUDAExecutionProvider', 'DirectMLExecutionProvider', 'OpenVINOExecutionProvider', 'ROCMExecutionProvider', 'CPUExecutionProvider', 'CoreMLExecutionProvider'][0m
+[comfyui_ryanontheinside.acestep] [ACE-Step Patches] Patched resolve_areas_and_cond_masks_multidim for 1D latent support
+[comfyui_ryanontheinside.acestep] [ACE-Step Patches] Patched comfy.utils.reshape_mask for 1D latent support
+[comfyui_ryanontheinside.acestep] [ACE-Step Patches] Patched resolve_areas_and_cond_masks_multidim for 1D latent support
+[comfyui_ryanontheinside.acestep] [ACE-Step Patches] Patched comfy.utils.reshape_mask for 1D latent support
+[1m[33m[WARNING][0m Traceback (most recent call last):
+  File "F:\comfyui\nodes.py", line 2247, in load_custom_node
+    module_spec.loader.exec_module(module)
+  File "<frozen importlib._bootstrap_external>", line 999, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "F:\comfyui\custom_nodes\comfyui_sillynodes\__init__.py", line 11, in <module>
+    from .text_batch_load_path import TextBatchLoadPath
+ModuleNotFoundError: No module named 'F:\\comfyui\\custom_nodes\\comfyui_sillynodes.text_batch_load_path'
+
+[1m[33m[WARNING][0m Cannot import F:\comfyui\custom_nodes\comfyui_sillynodes module for custom nodes: No module named 'F:\\comfyui\\custom_nodes\\comfyui_sillynodes.text_batch_load_path'
+USDU batch patches applied successfully.
+[32m[INFO][0m USDU batch patches applied successfully.
+[36;20m[F:\comfyui\custom_nodes\comfy_mtb] | INFO -> loaded [96m111[0m nodes successfuly[0m
+[36;20m[F:\comfyui\custom_nodes\comfy_mtb] | INFO -> Some nodes (2) could not be loaded. This can be ignored, but go to http://127.0.0.1:8388/mtb if you want more information.[0m
+[32m[INFO][0m ======================================== Stand-In ========================================
+[32m[INFO][0m Successfully loaded all Stand-In nodes.
+[32m[INFO][0m ==========================================================================================
+[💪[0;33mTB[0m [0;32mINFO[0m] Imported 32 nodes
+[32m[INFO][0m 
+Import times for custom nodes:
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\websocket_image_save.py
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_RH_UNO
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\Comfyui-PainterAudioCut
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\Nvidia_RTX_Nodes_ComfyUI
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\wan22_prompt_selector
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-EsesImageEffectBloom
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-openpose-editor
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_AdvancedRefluxControl
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-mxtoolkit
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Chinese-Translation
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\HeartMuLa_ComfyUI
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-OpenPose-Keypoint-Extractor
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\AIGODLIKE-ComfyUI-Translation
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-unload-model
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Universal-Styler
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-HunyuanVideoMultiLora
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_IPAdapter_plus
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-logic
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-ic-light-native
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_QwenVL
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\cg-use-everywhere
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_Text_Translation
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ICEdit-ComfyUI-official
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-QZ_plugins
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-director-stage
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\CYBERPUNK-STYLE-DIY
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Img2PaintingAssistant
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Detail-Daemon
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-SAI_API
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyLiterals
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-YOLO
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\Comfyui-QwenEditUtils
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-IF_VideoPrompts
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Text-Translation
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\heygem-mw
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-glifnodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_Qwen3-VL-Instruct
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-post-processing-nodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Inpaint-CropAndStitch
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Openpose-Editor-Plus
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-LatentSyncWrapper
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-InpaintEasy
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Any-Path-Repair
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui_video_BC
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-SoundFlow
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-relight
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-MediaMixer
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-ollama
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\efficiency-nodes-comfyui
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Basic-Math
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-nodes-docs
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-get-meta
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_InstantID
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\Stand-In_Preprocessor_ComfyUI
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_ZenID
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-GGUF
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-IPAdapter-Flux
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Impact-Pack
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\Comfyui-ergouzi-kaiguan
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-TiledDiffusion
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-layerdiffuse
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-florence2
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyMath
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-MJAPI-party
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-inpaint-nodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui_controlnet_aux
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-enricos-nodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-custom-scripts
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-ic-light
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_Qwen2-VL-Instruct
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui_ttp_toolset
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-FramePackWrapper
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui_essentials
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\derfuu_comfyui_moddednodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\janus-pro
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-photoshop
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-JanusPro-PL
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-tooling-nodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_SLK_joy_caption_two
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-MelBandRoFormer
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-LGGCFX-Tools
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Fluxtapoz
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-DepthCrafter-Nodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Janus_pro_vision
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_UltimateSDUpscale
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_RH_FramePack
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-WanVideoStartEndFrames
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_FaceAnalysis
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui-various
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-DepthAnythingV2
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\steerable-motion
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\comfyui_caption_this
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Curve
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI_tinyterraNodes
+[32m[INFO][0m    0.0 seconds: F:\comfyui\custom_nodes\ComfyUI-Advanced-ControlNet
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI_RH_USO
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-MiniCPM
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\comfyui_prompt_assistant
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-Inspire-Pack
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\rgthree-comfy
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\Comfyui_LG_Tools
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-JakeUpgrade
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-LBMWrapper
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-MieNodes
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-VideoHelperSuite
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-segment-anything-2
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI_Sonic
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-LTXVideo
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-GIMM-VFI
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-to-Python-Extension
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-KJNodes
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\comfyui-hunyuanvideowrapper
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-ShellAgent-Plugin
+[32m[INFO][0m    0.1 seconds (IMPORT FAILED): F:\comfyui\custom_nodes\comfyui_sillynodes
+[32m[INFO][0m    0.1 seconds: F:\comfyui\custom_nodes\ComfyUI-Lightning
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\tinybreaker
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\ComfyUI_BiRefNet_ll
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\facerestore_cf
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\ComfyUI-Crystools
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\comfy_mtb
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\comfyui_ryanonyheinside
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\ComfyUI-Frame-Interpolation
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\comfyui_layerstyle
+[32m[INFO][0m    0.2 seconds: F:\comfyui\custom_nodes\ComfyUI-SparkTTS
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\comfyui-fluxtrainer
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\ComfyUI_LayerStyle_Advance
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\comfyui-anyline
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\ComfyUI-PuLID-Flux-Enhanced
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\ComfyUI-Easy-Use
+[32m[INFO][0m    0.3 seconds: F:\comfyui\custom_nodes\ComfyUI-LogicUtils
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\ComfyUI-CogVideoXWrapper
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\ComfyUI_RyanOnTheInside
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\ComfyUI_MegaTTS3
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\comfyui_facetools
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\comfyui-reactor
+[32m[INFO][0m    0.4 seconds: F:\comfyui\custom_nodes\ComfyUI-RBG-ImageStitchPlus
+[32m[INFO][0m    0.5 seconds: F:\comfyui\custom_nodes\comfyui-lumi-batcher
+[32m[INFO][0m    0.5 seconds: F:\comfyui\custom_nodes\comfyui_kontext_Analyze
+[32m[INFO][0m    0.6 seconds: F:\comfyui\custom_nodes\ComfyUI-FLOAT
+[32m[INFO][0m    0.7 seconds: F:\comfyui\custom_nodes\sd-ppp
+[32m[INFO][0m    0.7 seconds: F:\comfyui\custom_nodes\ComfyUI-Manager
+[32m[INFO][0m    0.8 seconds: F:\comfyui\custom_nodes\comfyui-qwen3-tts
+[32m[INFO][0m    0.8 seconds: F:\comfyui\custom_nodes\ComfyUI-Image-Filters
+[32m[INFO][0m    0.9 seconds: F:\comfyui\custom_nodes\ComfyUI-WanVideoWrapper
+[32m[INFO][0m    0.9 seconds: F:\comfyui\custom_nodes\ComfyUI-DeepSeek-JanusPro
+[32m[INFO][0m    1.0 seconds: F:\comfyui\custom_nodes\ComfyUI_NTCosyVoice
+[32m[INFO][0m    1.2 seconds: F:\comfyui\custom_nodes\was-node-suite-comfyui
+[32m[INFO][0m    1.2 seconds: F:\comfyui\custom_nodes\ComfyUI-IF_LLM
+[32m[INFO][0m    1.6 seconds: F:\comfyui\custom_nodes\comfyui-art-venture
+[32m[INFO][0m    2.4 seconds: F:\comfyui\custom_nodes\ComfyUI-SUPIR
+[32m[INFO][0m    2.5 seconds: F:\comfyui\custom_nodes\comfyui-mixlab-nodes
+[32m[INFO][0m    2.6 seconds: F:\comfyui\custom_nodes\ComfyUI-Impact-Subpack
+[32m[INFO][0m    3.2 seconds: F:\comfyui\custom_nodes\audio-separation-nodes-comfyui
+[32m[INFO][0m    3.3 seconds: F:\comfyui\custom_nodes\ComfyUI_Custom_Nodes_AlekPet
+[32m[INFO][0m    4.6 seconds: F:\comfyui\custom_nodes\Bjornulf_custom_nodes
+[32m[INFO][0m   11.6 seconds: F:\comfyui\custom_nodes\comfy-rvc
+[32m[INFO][0m 
+[32m[INFO][0m Context impl SQLiteImpl.
+[32m[INFO][0m Will assume non-transactional DDL.
+[32m[INFO][0m Using RAM pressure cache.
+[32m[INFO][0m Starting server
+
+[32m[INFO][0m To see the GUI go to: http://127.0.0.1:8388
+[32m[INFO][0m got prompt
+[32m[INFO][0m [32mPrompt executed in 0.05 seconds[0m
+[32m[INFO][0m got prompt
+[32m[INFO][0m [32mPrompt executed in 0.02 seconds[0m

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D导演台 M0</title>
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --panel: #171a22;
+      --border: #2a2f3d;
+      --text: #e6e9f0;
+      --muted: #8a90a0;
+      --accent: #2f9e63;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+    }
+    #topbar {
+      height: 50px;
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    #title { font-size: 15px; font-weight: 600; white-space: nowrap; }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text);
+      background: #232836;
+      transition: filter 0.15s;
+      white-space: nowrap;
+    }
+    button:hover { filter: brightness(1.2); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #btnApply { background: var(--accent); border-color: #37b573; }
+    #hint { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #status { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    #viewport {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+    }
+    #viewport canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <span id="title">🎬 3D导演台 M0</span>
+    <button id="btnApply">✅ 应用到节点</button>
+    <button id="btnCancel">❌ 取消</button>
+    <span id="hint">左键选关节拖动 / 右键旋转视角 / 滚轮缩放</span>
+    <span id="status"></span>
+  </div>
+  <div id="viewport"></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,353 @@
+Starting up lumi_batcher_service...
+Registering lumi_batcher_service module...
+Successfully registered module: lumi_batcher_service
+lumi_batcher_service started successfully.
+[START] Security scan
+[DONE] Security scan
+## ComfyUI-Manager: installing dependencies done.
+** ComfyUI startup time: 2026-07-19 04:40:55.375
+** Platform: Windows
+** Python version: 3.12.8 (tags/v3.12.8:2dc476b, Dec  3 2024, 19:30:04) [MSC v.1942 64 bit (AMD64)]
+** Python executable: F:\comfyui\venv\Scripts\python.exe
+** ComfyUI Path: F:\comfyui
+** ComfyUI Base Folder Path: F:\comfyui
+** User directory: F:\comfyui\user
+** ComfyUI-Manager config path: F:\comfyui\user\__manager\config.ini
+** Log path: F:\comfyui\user\comfyui.log
+unknown args: ['--cpu', '--disable-auto-launch']
+Found GPU NVIDIA GeForce RTX 5090
+please download ffmpeg-static and export to FFMPEG_PATH. 
+For example: export FFMPEG_PATH=/musetalk/ffmpeg-4.4-amd64-static
+Web extensions folder found at F:\comfyui\web\extensions\ComfyLiterals
+🔧 Model Path Fixer: Loaded.
+DWPose: Onnxruntime with acceleration providers detected
+Adding F:\comfyui\custom_nodes to sys.path
+[36mEfficiency Nodes:[0m Attempting to add Control Net options to the 'HiRes-Fix Script' Node (comfyui_controlnet_aux add-on)...[92mSuccess![0m
+Loaded Efficiency nodes from F:\comfyui\custom_nodes\efficiency-nodes-comfyui
+Loaded comfyui_controlnet_aux nodes from F:\comfyui\custom_nodes\comfyui_controlnet_aux
+Loaded AdvancedControlNet nodes from F:\comfyui\custom_nodes\ComfyUI-Advanced-ControlNet
+Could not find AnimateDiff nodes
+Loaded IPAdapter nodes from F:\comfyui\custom_nodes\ComfyUI_IPAdapter_plus
+Loaded VideoHelperSuite from F:\comfyui\custom_nodes\ComfyUI-VideoHelperSuite
+Loaded ImpactPack nodes from F:\comfyui\custom_nodes\ComfyUI-Impact-Pack
+[Crystools [0;32mINFO[0m] Crystools version: 1.27.4
+[Crystools [0;32mINFO[0m] Platform release: 11
+[Crystools [0;32mINFO[0m] JETSON: Not detected.
+[Crystools [0;32mINFO[0m] CPU: 13th Gen Intel(R) Core(TM) i9-13900K - Arch: AMD64 - OS: Windows 11
+[Crystools [0;32mINFO[0m] pynvml (NVIDIA) initialized.
+[Crystools [0;32mINFO[0m] GPU/s:
+[Crystools [0;32mINFO[0m] 0) NVIDIA GeForce RTX 5090
+[Crystools [0;32mINFO[0m] NVIDIA Driver: 610.62
+[Crystools [0;33mWARNING[0m] CUDA is available, but torch is using CPU.
+� 预�API�由注册完�
+Python version is above 3.10, patching the collections module.
+
+Depthcrafter Nodes Loaded
+
+[3D导演台] 编辑器静态目录已挂载�/director_stage/editor
+[34m[ComfyUI-Easy-Use] server: [0mv1.3.7 [92mLoaded[0m
+[34m[ComfyUI-Easy-Use] web root: [0mF:\comfyui\custom_nodes\ComfyUI-Easy-Use\web_version/v2 [92mLoaded[0m
+--------------------- Jake Upgrade Nodes ---------------------
+🔶 Version 2.7.5
+🔶 Config file loaded successfully
+🔶 Using standard version of RandomPrompter
+� RandomPrompter config read error: 'RandomPrompterConfig'
+🔶 All main modules loaded
+🔶 No deprecated nodes loaded
+🔶 Total nodes: 108
+--------------------------------------------------------------
+Python version is above 3.10, patching the collections module.
+Set up system temp directory: C:\Users\ADMINI~1\AppData\Local\Temp\latentsync_595b411d
+[94mtheUpsiders Logic Nodes: [92mLoaded[0m
+comfyui_lumi_batcher_workspace has already been created
+comfyui_lumi_batcher_workspace\resources has already been created
+comfyui_lumi_batcher_workspace\db has already been created
+comfyui_lumi_batcher_workspace\download has already been created
+comfyui_lumi_batcher_workspace\upload has already been created
+
+----------------------------------------------------------------------
+[ComfyUI-Manager] NOTICE: Legacy backup exists
+  - Your old Manager data was backed up to:
+      F:\comfyui\user\__manager\.legacy-manager-backup
+  - Please verify and remove it when no longer needed.
+----------------------------------------------------------------------
+
+[91m� GGUF loading error: Failed to load shared library 'F:\comfyui\venv\Lib\site-packages\llama_cpp\lib\llama.dll': Could not find module 'F:\comfyui\venv\Lib\site-packages\llama_cpp\lib\llama.dll' (or one of its dependencies). Try using the full path with constructor syntax.[0m
+[96m📖 Installation guide: https://github.com/1038lab/ComfyUI-MiniCPM/tree/main/llama_cpp_install[0m
+[92m� MiniCPM loaded: 2 nodes from 1 modules[0m
+[93m��  Skipped: AILab_MiniCPM_GGUF[0m
+json_repair## OK
+## clip_interrogator_model not found: F:\comfyui\models\clip_interrogator\Salesforce\blip-image-captioning-base, pls download from https://huggingface.co/Salesforce/blip-image-captioning-base
+## text_generator_model not found: F:\comfyui\models\prompt_generator\text2image-prompt-generator, pls download from https://huggingface.co/succinctly/text2image-prompt-generator/tree/main
+## zh_en_model not found: F:\comfyui\models\prompt_generator\opus-mt-zh-en, pls download from https://huggingface.co/Helsinki-NLP/opus-mt-zh-en/tree/main
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+fal-client## OK
+[95m==============================================
+[95m[comfyui-nodes-docs][0mLoaded comfyui-nodes-docs plugin
+[95m==============================================[0m
+[34mOpenpose Editor Plus: [92mLoaded[0m
+Please 'pip install xformers'
+Nvidia APEX normalization not installed, using PyTorch LayerNorm
+
+********
+Warning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.
+********
+ 
+Use Proxy: http://127.0.0.1:12145
+### Loading: ComfyUI-RBG-ImageStitchPlus ###
+
+[0;33m[ReActor][0m - [38;5;173mSTATUS[0m - [0;32mRunning v0.7.0-a2 in ComfyUI[0m
+Torch version: 2.11.0+cu130
+{'ShellAgentPluginInputAudio': <class 'input_audio.ShellAgentPluginInputAudio'>, 'ShellAgentPluginSaveAudios': <class 'input_audio.ShellAgentSaveAudios'>, 'ShellAgentPluginSaveAudio': <class 'input_audio.ShellAgentSaveAudio'>, 'ShellAgentPluginInputImage': <class 'input_image.ShellAgentPluginInputImage'>, 'ShellAgentPluginInputImageArray': <class 'input_image_array.ShellAgentPluginInputImageArray'>, 'ShellAgentPluginInputText': <class 'input_text.ShellAgentPluginInputText'>, 'ShellAgentPluginInputFloat': <class 'input_text.ShellAgentPluginInputFloat'>, 'ShellAgentPluginInputInteger': <class 'input_text.ShellAgentPluginInputInteger'>, 'ShellAgentPluginInputBoolean': <class 'input_text.ShellAgentPluginInputBoolean'>, 'ShellAgentPluginInputVideo': <class 'input_video.ShellAgentPluginInputVideo'>, 'ShellAgentPluginSaveImage': <class 'output_image.ShellAgentSaveImage'>, 'ShellAgentPluginSaveImages': <class 'output_image.ShellAgentSaveImages'>, 'ShellAgentPluginSaveVideoVHS': <class 'output_image.ShellAgentSaveVideoVHS'>, 'ShellAgentPluginOutputText': <class 'output_text.ShellAgentOutputText'>, 'ShellAgentPluginOutputFloat': <class 'output_text.ShellAgentOutputFloat'>, 'ShellAgentPluginOutputInteger': <class 'output_text.ShellAgentOutputInteger'>, 'ShellAgentPluginOutputBoolean': <class 'output_text.ShellAgentOutputBoolean'>, 'ShellAgentPluginVideoCombineEncrypt': <class 'output_video_encrypt.ShellAgentVideoCombineEncrypt'>} {'ShellAgentPluginInputAudio': 'Input Audio (ShellAgent Plugin)', 'ShellAgentPluginSaveAudios': 'Save Audios (ShellAgent Plugin)', 'ShellAgentPluginSaveAudio': 'Save Audio (ShellAgent Plugin)', 'ShellAgentPluginInputImage': 'Input Image (ShellAgent Plugin)', 'ShellAgentPluginInputImageArray': 'Input Image Array (ShellAgent Plugin)', 'ShellAgentPluginInputText': 'Input Text (ShellAgent Plugin)', 'ShellAgentPluginInputFloat': 'Input Float (ShellAgent Plugin)', 'ShellAgentPluginInputInteger': 'Input Integer (ShellAgent Plugin)', 'ShellAgentPluginInputBoolean': 'Input Boolean (ShellAgent Plugin)', 'ShellAgentPluginInputVideo': 'Input Video (ShellAgent Plugin)', 'ShellAgentPluginSaveImage': 'Save Image (ShellAgent Plugin)', 'ShellAgentPluginSaveImages': 'Save Images (ShellAgent Plugin)', 'ShellAgentPluginSaveVideoVHS': 'Save Video - VHS (ShellAgent Plugin)', 'ShellAgentPluginOutputText': 'Output Text (ShellAgent Plugin)', 'ShellAgentPluginOutputFloat': 'Output Float (ShellAgent Plugin)', 'ShellAgentPluginOutputInteger': 'Output Integer (ShellAgent Plugin)', 'ShellAgentPluginVideoCombineEncrypt': 'Video Combine Encrypt (ShellAgent Plugin)'}
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+no module 'xformers'. Processing without...
+no module 'xformers'. Processing without...
+FETCH ComfyRegistry Data: 5/162
+Use Proxy: http://127.0.0.1:12145
+Python version is above 3.10, patching the collections module.
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+[1;35m
+### [START] ComfyUI AlekPet Nodes [1;34mv1.1.7[0m[1;35m ###[0m
+[92mNode -> ArgosTranslateNode: [93mArgosTranslateCLIPTextEncodeNode, ArgosTranslateTextNode[0m [92m[1;31;40m [Failed][0m[0m
+[92mNode -> ChatGLMNode: [93mChatGLM4TranslateCLIPTextEncodeNode, ChatGLM4TranslateTextNode, ChatGLM4InstructNode, ChatGLM4InstructMediaNode, ChatGLMImageGenerateNode, ChatGLMVideoGenerateNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> DeepLXTranslateNode:  [92m[92m[Loading][0m[0m
+[92mNode -> DeepTranslatorNode: [93mDeepTranslatorCLIPTextEncodeNode, DeepTranslatorTextNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> ExtrasNode: [93mPreviewTextNode, HexToHueNode, ColorsCorrectNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> GoogleTranslateNode: [93mGoogleTranslateCLIPTextEncodeNode, GoogleTranslateTextNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> IDENode: [93mIDENode[0m [92m[92m[Loading][0m[0m
+[92mNode -> PainterNode: [93mPainterNode[0m [92m[92m[Loading][0m[0m
+[92mNode -> PoseNode: [93mPoseNode[0m [92m[92m[Loading][0m[0m
+[92m
+[1;31;40m* Nodes have been temporarily disabled due to the error or specially *[0m
+[93mArgosTranslateNode -> [1;31;40mmodule 'pkgutil' has no attribute 'ImpImporter'[0m
+[0m
+[1;35m### [END] ComfyUI AlekPet Nodes ###[0m
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 10/162
+failed to import ttsfrd, use WeTextProcessing instead
+Use Proxy: http://127.0.0.1:12145
+✨提示词小助� V2.0.6 已启�
+Currently enabled native sdp backends: ['flash', 'math', 'mem_efficient', 'cudnn']
+Xformers is not installed!
+Flash Attn is not installed!
+Sage Attn is installed!
+run in comfyui
+RYAN ON THE INSIDE - Custom Nodes Loaded
+[RyanOnTheInside] Copying extension file: widget_hotkey.js
+Checking for AdvancedLivePortrait at: None
+Checking for Advanced-ControlNet at: F:\comfyui\custom_nodes\ComfyUI-Advanced-ControlNet
+Checking for AnimateDiff-Evolved at: None
+ComfyUI-AdvancedLivePortrait not found. FlexExpressionEditor will not be available. Install ComfyUI-AdvancedLivePortrait and restart ComfyUI.
+ComfyUI-AnimateDiff-Evolved not found. AnimateDiff feature nodes will not be available. Install ComfyUI-AnimateDiff-Evolved and restart ComfyUI.
+RYAN ON THE INSIDE - Custom Nodes Loaded
+[RyanOnTheInside] Copying extension file: widget_hotkey.js
+Checking for AdvancedLivePortrait at: None
+Checking for Advanced-ControlNet at: F:\comfyui\custom_nodes\ComfyUI-Advanced-ControlNet
+Checking for AnimateDiff-Evolved at: None
+ComfyUI-AdvancedLivePortrait not found. FlexExpressionEditor will not be available. Install ComfyUI-AdvancedLivePortrait and restart ComfyUI.
+ComfyUI-AnimateDiff-Evolved not found. AnimateDiff feature nodes will not be available. Install ComfyUI-AnimateDiff-Evolved and restart ComfyUI.
+[92m[tinyterraNodes] [32mLoaded[0m
+
+[38;5;201m ██████�[38;5;165m██�   ██�[38;5;129m██████� [38;5;93m███████╗[38;5;57m██████� [38;5;21m██████� [38;5;27m██�   ██�[38;5;33m███╗   ██�[38;5;39m██�  ██�[0m
+[38;5;201m██╔════╝[38;5;165m╚██╗ ██╔╝[38;5;129m██╔══██╗[38;5;93m██╔════╝[38;5;57m██╔══██╗[38;5;21m██╔══██╗[38;5;27m██�   ██�[38;5;33m████�  ██�[38;5;39m██� ██╔╝[0m
+[38;5;201m██�     [38;5;165m ╚████╔� [38;5;129m██████╔╝[38;5;93m█████╗  [38;5;57m██████╔╝[38;5;21m██████╔╝[38;5;27m██�   ██�[38;5;33m██╔██╗ ██�[38;5;39m█████╔� [0m
+[38;5;201m██�     [38;5;165m  ╚██╔�  [38;5;129m██╔══██╗[38;5;93m██╔══╝  [38;5;57m██╔═══� [38;5;21m██╔═══� [38;5;27m██�   ██�[38;5;33m██║╚██╗██║[38;5;39m██╔═██� [0m
+[38;5;201m╚██████╗[38;5;165m   ██�   [38;5;129m██████╔╝[38;5;93m███████╗[38;5;57m██�     [38;5;21m██�     [38;5;27m╚██████╔�[38;5;33m██� ╚████║[38;5;39m██�  ██�[0m
+[38;5;201m ╚═════�[38;5;165m   ╚═�   [38;5;129m╚═════� [38;5;93m╚══════╝[38;5;57m╚═�     [38;5;21m╚═�     [38;5;27m ╚═════� [38;5;33m╚═�  ╚═══�[38;5;39m╚═�  ╚═�[0m
+
+[38;5;51m🚀 CYBERPUNK-STYLE-DIY Custom Nodes Loaded! 🚀[0m
+
+[36mEfficiency Nodes:[0m Attempting to add Control Net options to the 'HiRes-Fix Script' Node (comfyui_controlnet_aux add-on)...[92mSuccess![0m
+Use Proxy: http://127.0.0.1:12145
+
+[92m[rgthree-comfy] Loaded 48 epic nodes. 🎉[0m
+
+[33m[rgthree-comfy] ComfyUI's new Node 2.0 rendering may be incompatible with some rgthree-comfy nodes and features, breaking some rendering as well as losing the ability to access a node's properties (a vital part of many nodes). It also appears to run MUCH more slowly spiking CPU usage and causing jankiness and unresponsiveness, especially with large workflows. Personally I am not planning to use the new Nodes 2.0 and, unfortunately, am not able to invest the time to investigate and overhaul rgthree-comfy where needed. If you have issues when Nodes 2.0 is enabled, I'd urge you to switch it off as well and join me in hoping ComfyUI is not planning to deprecate the existing, stable canvas rendering all together.
+[0m
+Use Proxy: http://127.0.0.1:12145
+[34mWAS Node Suite: [0mOpenCV Python FFMPEG support is enabled[0m
+[34mWAS Node Suite [93mWarning: [0m`ffmpeg_bin_path` is not set in `F:\comfyui\custom_nodes\was-node-suite-comfyui\was_suite_config.json` config file. Will attempt to use system ffmpeg binaries if available.[0m
+[34mWAS Node Suite: [0mFinished.[0m [32mLoaded[0m [0m220[0m [32mnodes successfully.[0m
+
+	[3m[93m"The biggest risk is not taking any risk. In a world that is changing quickly, the only strategy that is guaranteed to fail is not taking risks."[0m[3m - Mark Zuckerberg[0m
+
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 15/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 20/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 25/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 30/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 35/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 40/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 45/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 50/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 55/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+comfyui lumi batcher overwrite task done
+Use Proxy: http://127.0.0.1:12145
+[3D导演台] 警告：manifest �缺少 openpose 通道文件，输出空白图像（请先在编辑器�点击「应用��出）�
+[3D导演台] 警告：manifest �缺少 depth 通道文件，输出空白图像（请先在编辑器�点击「应用��出）�
+comfyui lumi batcher overwrite task done
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 60/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 65/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 70/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 75/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 80/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 85/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 90/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 95/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 100/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 105/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 110/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 115/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 120/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 125/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 130/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 135/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 140/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 145/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 150/162
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+Use Proxy: http://127.0.0.1:12145
+FETCH ComfyRegistry Data: 155/162
+Use Proxy: http://127.0.0.1:12145

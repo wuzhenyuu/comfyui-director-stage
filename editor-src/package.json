@@ -1,0 +1,19 @@
+{
+  "name": "director-stage-editor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "3D导演台 M0 - Three.js 姿势编辑器（构建产物输出到 ../web/editor）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "pako": "^3.0.1",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.3.0",
+    "vite": "^8.1.5"
+  }
+}
