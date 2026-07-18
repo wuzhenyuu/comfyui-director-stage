@@ -237,29 +237,27 @@ function ndcFromEvent(e, domElement) {
 
 /**
  * 收集所有可拾取对象
- * 在 IK 模式下仅 IK targets/poles 可拾取（关节球纯视觉）
- * 在 FK 模式下所有关节球可拾取（类似 M1）
+ * FK 模式（默认）：关节球可拖拽，类似 M1
+ * IK 模式（勾选）：仅 IK targets/poles 可拾取
  */
 function getPickableObjects() {
   const api = window.DS_FigureAPI;
   const char = api ? api.getActiveCharacter() : null;
   const objects = [];
 
-  // FK 模式开关（由 main.js 设置）
   const fkMode = window.__ds?.fkMode;
 
   if (char) {
     if (fkMode) {
-      // FK 模式：所有关节球可拖拽
-      objects.push(...char.jointSpheres);
-    } else {
-      // IK 模式：仅 IK targets 和 poles 可拾取，关节球纯视觉
+      // IK 模式：仅 IK targets 和 poles 可拾取
       for (const state of Object.values(char.ikState)) {
         objects.push(state.target, state.pole);
       }
+    } else {
+      // FK 模式（默认）：所有关节球可拖拽
+      objects.push(...char.jointSpheres);
     }
   } else if (window.__ds?.joints) {
-    // M1 降级
     objects.push(...window.__ds.joints);
   }
 

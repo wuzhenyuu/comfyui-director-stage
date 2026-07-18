@@ -363,8 +363,8 @@ function createJointSpheresForCharacter(colorHex) {
   const group = new THREE.Group();
   const meshes = [];
 
-  // M2 IK模式：关节球缩小到0.02（纯视觉指示器），IK targets变大到0.05（交互目标）
-  const jointGeo = new THREE.SphereGeometry(0.02, 24, 16);
+  // FK模式默认：标准大小关节球；IK模式下缩小半透明
+  const jointGeo = new THREE.SphereGeometry(0.035, 24, 16);
   for (let i = 0; i < 18; i++) {
     let col;
     if (RIGHT_JOINTS.has(i)) col = 0xff9966;
@@ -376,9 +376,7 @@ function createJointSpheresForCharacter(colorHex) {
       roughness: 0.5,
       metalness: 0.05,
       emissive: col,
-      emissiveIntensity: 0.08,
-      transparent: true,
-      opacity: 0.6,
+      emissiveIntensity: 0.15,
     });
     const mesh = new THREE.Mesh(jointGeo, mat);
     mesh.position.set(T_POSE[i][0], T_POSE[i][1], T_POSE[i][2]);
@@ -483,15 +481,27 @@ export function updateBones(joints, bones) {
   const char = charManager.active;
   if (!char) return;
 
-  // FK 模式：完全不运行 IK，允许自由拖拽关节（M1 兼容）
-  if (window.__ds?.fkMode) {
+  // FK 模式（默认）：不运行 IK，保持 M1 风格关节球交互
+  const fkMode = !window.__ds?.fkMode; // 默认不勾选=FK模式
+  if (fkMode) {
+    // 隐藏 IK 目标，显示完整关节球
+    for (const state of Object.values(char.ikState)) {
+      state.target.visible = false;
+      state.pole.visible = false;
+    }
+    char.jointSpheres.forEach(s => { s.material.transparent = false; s.material.opacity = 1; });
     updateBoneMeshesFromSpheres(char.jointSpheres, char.boneMeshes);
     return;
   }
 
-  // 关键修复：TransformControls 正在拖拽时，
-  // 仅运行 IK solve（让 IK target 拖动实时反馈），
-  // 但不同步骨骼→关节球（避免覆盖用户拖动）
+  // IK 模式：显示 target/pole，关节球变小半透明
+  for (const state of Object.values(char.ikState)) {
+    state.target.visible = true;
+    state.pole.visible = true;
+  }
+  char.jointSpheres.forEach(s => { s.material.transparent = true; s.material.opacity = 0.6; });
+
+  // TransformControls 拖拽中 → 仅运行 IK 不同步
   const tctrl = window.__ds?.__tctrl;
   if (tctrl && tctrl.dragging) {
     _runIKOnly(char);

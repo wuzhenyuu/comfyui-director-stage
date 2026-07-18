@@ -383,37 +383,20 @@ function injectTopbarControls() {
   lockLabel.appendChild(lockCheckbox);
   lockLabel.appendChild(document.createTextNode("🔒骨长"));
 
-  // ── FK 模式切换 ──
-  const fkLabel = document.createElement("label");
-  fkLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
-  const fkCheckbox = document.createElement("input");
-  fkCheckbox.type = "checkbox";
-  fkCheckbox.style.cssText = "accent-color:#e67e22;";
-  fkCheckbox.addEventListener("change", () => {
-    window.__ds.fkMode = fkCheckbox.checked;
-    // FK模式下恢复关节球可见性
-    const api = window.DS_FigureAPI;
-    if (api) {
-      const char = api.getActiveCharacter();
-      if (char) {
-        char.jointSpheres.forEach((s, i) => {
-          s.material.opacity = fkCheckbox.checked ? 1.0 : 0.6;
-        });
-        // IK targets 仅在IK模式下可见
-        for (const state of Object.values(char.ikState)) {
-          state.target.visible = !fkCheckbox.checked;
-          state.pole.visible = !fkCheckbox.checked;
-        }
-      }
-    }
-    if (fkCheckbox.checked) {
-      // 切换到FK：pivot所有关节球到IK骨骼当前位置
-      if (api?.applySpheresToBones) api.applySpheresToBones();
-    }
-    showToast(fkCheckbox.checked ? "已切换到 FK 自由模式（可拖关节）" : "已切换到 IK 骨骼模式（拖手脚球）", false);
+  // ── IK 模式切换（默认关闭 = FK 自由拖关节）──
+  const ikLabel = document.createElement("label");
+  ikLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const ikCheckbox = document.createElement("input");
+  ikCheckbox.type = "checkbox";
+  ikCheckbox.checked = false;  // 默认 FK 模式
+  ikCheckbox.style.cssText = "accent-color:#2f9e63;";
+  ikCheckbox.addEventListener("change", () => {
+    window.__ds.fkMode = ikCheckbox.checked;
+    showToast(ikCheckbox.checked ? "🦴IK模式：拖手脚球摆姿势" : "🦴FK自由模式：直接拖关节", false);
+    updateStatus();
   });
-  fkLabel.appendChild(fkCheckbox);
-  fkLabel.appendChild(document.createTextNode("🦴FK"));
+  ikLabel.appendChild(ikCheckbox);
+  ikLabel.appendChild(document.createTextNode("🦴IK"));
 
   // ── M2 独有：线框模式 ──
   const wireLabel = document.createElement("label");
@@ -559,6 +542,7 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", gridLabel);
   afterBtn.insertAdjacentElement("afterend", wireLabel);
   afterBtn.insertAdjacentElement("afterend", lockLabel);
+  afterBtn.insertAdjacentElement("afterend", ikLabel);
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
 
@@ -568,7 +552,12 @@ function injectTopbarControls() {
   cameraSettings.bindUI(focalSlider, focalLabel, thirdsCheckbox);
 
   document.getElementById("hint").textContent =
-    "拖手脚球🟡🔵摆姿势 | 右键旋转 | 滚轮缩放 | 🦴FK=自由拖关节 | Ctrl+1~9切机位";
+    "左键选关节拖动 | 右键旋转视角 | 滚轮缩放 | 🦴IK=骨骼摆姿 | Ctrl+1~9切机位";
+
+  if (!window.DS_FigureAPI) {
+    document.getElementById("hint").textContent =
+      "左键选关节拖动 / 右键旋转视角 / 滚轮缩放";
+  }
 
   // 如果没有 DS_FigureAPI（M1兼容），不显示 IK 提示
   if (!window.DS_FigureAPI) {
