@@ -636,7 +636,7 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", importBtn);
   afterBtn.insertAdjacentElement("afterend", vrmImportBtn);
   afterBtn.insertAdjacentElement("afterend", redoBtn);
-  afterBtn.insertAdjacentElement("afterend", undobtn);
+  afterBtn.insertAdjacentElement("afterend", undoBtn);
   afterBtn.insertAdjacentElement("afterend", hidePropsLabel);
   afterBtn.insertAdjacentElement("afterend", gridLabel);
   afterBtn.insertAdjacentElement("afterend", wireLabel);
