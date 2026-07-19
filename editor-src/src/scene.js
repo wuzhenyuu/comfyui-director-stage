@@ -20,16 +20,25 @@ export function createRenderer() {
 /** 创建场景（含灯光、网格、坐标轴） */
 export function createScene() {
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x14161c);
+  scene.background = new THREE.Color(0x222233);
 
-  grid = new THREE.GridHelper(6, 12, 0x55607a, 0x262b38);
+  grid = new THREE.GridHelper(6, 12, 0x888899, 0x333344);
   scene.add(grid);
 
   axes = new THREE.AxesHelper(0.6);
   scene.add(axes);
 
-  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x34322c, 1.1));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 1.6);
+  // 诊断信标：原点红色大球，确认渲染正常
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.1, 16, 8),
+    new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0x440000, roughness: 0.3 })
+  );
+  beacon.position.set(0, 1, 0);
+  beacon.name = "diagnostic_beacon";
+  scene.add(beacon);
+
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x34322c, 1.5));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 2);
   dirLight.position.set(2.5, 4, 3);
   scene.add(dirLight);
 
