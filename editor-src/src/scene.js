@@ -14,6 +14,7 @@ let viewportEl = null;
 export function createRenderer() {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(512, 768); // 初始设置合理尺寸，避免 1x1 导致不可见
   return renderer;
 }
 
@@ -76,7 +77,11 @@ export function getSceneHelpers() {
 /** 将渲染器 canvas 挂到 DOM */
 export function mountRenderer(viewportElem) {
   viewportEl = viewportElem;
-  viewportEl.appendChild(renderer.domElement);
+  const canvas = renderer.domElement;
+  canvas.style.display = "block";
+  canvas.style.maxWidth = "100%";
+  canvas.style.maxHeight = "100%";
+  viewportEl.appendChild(canvas);
 }
 
 /** 获取渲染器 canvas 的 bounding rect */

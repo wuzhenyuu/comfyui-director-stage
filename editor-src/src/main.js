@@ -52,6 +52,16 @@ const scene = createScene();
 const defaultCamera = createCamera(cameraSettings.focalToVFovDeg(35), 1);
 mountRenderer(viewportEl);
 
+// 延迟确保 DOM 布局完成后再应用视口尺寸
+setTimeout(() => applyViewport(viewportEl), 100);
+setTimeout(() => applyViewport(viewportEl), 500);
+
+// ResizeObserver 动态适配
+if (window.ResizeObserver) {
+  new ResizeObserver(() => applyViewport(viewportEl)).observe(viewportEl);
+}
+window.addEventListener("resize", () => applyViewport(viewportEl));
+
 /* ========================= CameraManager ========================= */
 
 const cameraManager = new CameraManager();
