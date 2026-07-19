@@ -4,12 +4,13 @@
  * Manifest v2 格式:
  * {
  *   "version": 2,
- *   "cameras": [{ "id", "name", "files": { openpose, depth, normal, lineart }, "width", "height", "focalMM", "pose": {pos,target} }],
+ *   "cameras": [{ "id", "name", "files": { openpose, depth, normal, lineart }, "width", "height", "focalMM", "pose": {pos,target}, "cameraParams": {...} }],
  *   "masks": [{ "charId", "cameraId", "file" }],
  *   "sceneGz": "..."
  * }
  */
-import { renderOpenPoseCanvas, renderOpenPoseCanvasMulti, renderDepthCanvas, renderNormalCanvas, renderLineartCanvas, renderCharacterMasks } from "./pass-renderer.js";
+import * as THREE from "three";
+import { renderOpenPoseCanvas, renderOpenPoseCanvasMulti, renderDepthCanvas, renderNormalCanvas, renderLineartCanvas, renderCharacterMasks, renderPreviewCanvas } from "./pass-renderer.js";
 import { getCamera as getSceneCamera, getRenderer, getScene, getSceneHelpers } from "./scene.js";
 
 function canvasToBlob(cv) {
@@ -43,6 +44,82 @@ function getHiddenObjects(propManager) {
 
 function restoreHiddenObjects(propManager) {
   if (propManager) propManager.setGizmoVisible(true);
+}
+
+/**
+ * 从 THREE.PerspectiveCamera 提取完整的相机内外参和矩阵
+ * @param {THREE.PerspectiveCamera} cam - Three.js 透视相机
+ * @param {number} focalMM - 焦距（mm）
+ * @returns {Object} 相机参数对象
+ */
+function extractCameraParams(cam, focalMM) {
+  // ─── 内参 ───
+  const fovDeg = cam.fov;
+  const aspect = cam.aspect;
+  const near = cam.near;
+  const far = cam.far;
+  // 主点假设在图像中心
+  const principalPoint = [0.5, 0.5];
+
+  const intrinsics = {
+    focalMM: focalMM || 35,
+    fovDeg: parseFloat(fovDeg.toFixed(4)),
+    aspect: parseFloat(aspect.toFixed(4)),
+    near,
+    far,
+    principalPoint,
+  };
+
+  // ─── 外参 ───
+  const position = cam.position.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  // 计算 target：从相机位置沿朝向方向前进 3 个单位
+  const dir = new THREE.Vector3();
+  cam.getWorldDirection(dir);
+  const target = cam.position.clone().add(dir.clone().multiplyScalar(3));
+  const targetArr = target.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  // 提取相机坐标轴（世界空间）
+  const up = new THREE.Vector3(0, 1, 0);
+  up.applyQuaternion(cam.quaternion).normalize();
+  const upArr = up.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  // forward 是相机朝向（-Z 在相机本地空间，转换为世界空间）
+  const forward = dir.clone().normalize();
+  const forwardArr = forward.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  // right = forward × up（或从矩阵提取 X 轴）
+  const right = new THREE.Vector3();
+  right.crossVectors(forward, up).normalize();
+  // 如果 right 为零向量（极端情况），回退到世界 X 轴
+  if (right.lengthSq() < 1e-6) {
+    right.set(1, 0, 0);
+  }
+  const rightArr = right.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  const extrinsics = {
+    position: position,
+    target: targetArr,
+    up: upArr,
+    forward: forwardArr,
+    right: rightArr,
+  };
+
+  // ─── 投影矩阵（4x4，列主序）───
+  cam.updateProjectionMatrix();
+  const projMatrix = cam.projectionMatrix.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  // ─── 视图矩阵（4x4，列主序）───
+  // Three.js 的 view matrix = camera.matrixWorldInverse
+  cam.updateMatrixWorld();
+  const viewMatrix = cam.matrixWorldInverse.toArray().map((v) => parseFloat(v.toFixed(6)));
+
+  return {
+    intrinsics,
+    extrinsics,
+    projectionMatrix: projMatrix,
+    viewMatrix: viewMatrix,
+  };
 }
 
 /**
@@ -111,6 +188,9 @@ export async function performBatchExport(opts) {
       cam.aspect = exportW / exportH;
       cam.updateProjectionMatrix();
 
+      // 提取完整相机参数
+      const cameraParams = extractCameraParams(cam, camEntry.focalMM);
+
       const camManifest = {
         id: camEntry.id,
         name: camEntry.name,
@@ -120,15 +200,10 @@ export async function performBatchExport(opts) {
         focalMM: camEntry.focalMM,
         pose: {
           pos: cam.position.toArray(),
-          target: new THREE.Vector3(0, 1, 0).toArray(), // approximate target
+          target: cameraParams.extrinsics.target,
         },
+        cameraParams: cameraParams,
       };
-
-      // Compute render target from camera direction
-      const dir = new THREE.Vector3();
-      cam.getWorldDirection(dir);
-      const target = cam.position.clone().add(dir.multiplyScalar(3));
-      camManifest.pose.target = target.toArray();
 
       // ─── OpenPose ───
       if (enabledPasses.has("openpose")) {
@@ -194,6 +269,14 @@ export async function performBatchExport(opts) {
         progress();
       }
 
+      // ─── Preview（灰模光影参考）───
+      if (enabledPasses.has("preview")) {
+        const previewCv = renderPreviewCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const filename = `director_preview_${camEntry.id}_${t}.png`;
+        camManifest.files.preview = await uploadCanvas(previewCv, filename);
+        progress();
+      }
+
       // ─── Character Masks ───
       if (enabledPasses.has("mask") && characters.length > 0) {
         const masks = renderCharacterMasks(scene, cam, renderer, exportW, exportH, characters, hiddenObjects);
@@ -253,6 +336,9 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
     uploadCanvas(lineartCv, `director_lineart_${t}.png`),
   ]);
 
+  // 提取完整相机参数
+  const cameraParams = extractCameraParams(cam, 35);
+
   // M1 backward-compat: put files at top level AND include v2 cameras array
   const manifest = {
     version: 2,
@@ -264,7 +350,8 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
       width: exportW,
       height: exportH,
       focalMM: 35,
-      pose: { pos: [0, 1.4, 3.2], target: [0, 1, 0] },
+      pose: { pos: cam.position.toArray(), target: cameraParams.extrinsics.target },
+      cameraParams: cameraParams,
     }],
     masks: [],
     sceneGz,

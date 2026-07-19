@@ -271,13 +271,29 @@ class DirectorStage:
         return torch.cat(mask_tensors, dim=0)
 
     def _build_camera_json(self, camera):
-        """从 camera 中提取 {pos, target, focalMM} → JSON 字符串。"""
+        """从 camera 中提取完整内外参 → JSON 字符串。
+
+        优先使用 cameraParams（M2 新格式），回退到旧 pose 字段。
+        """
         try:
-            info = {
-                "pos": camera.get("pos", [0, 0, 0]),
-                "target": camera.get("target", [0, 0, 0]),
-                "focalMM": camera.get("focalMM", 35),
-            }
+            params = camera.get("cameraParams")
+            if params and isinstance(params, dict):
+                # M2 新格式：完整内外参
+                info = {
+                    "id": camera.get("id", ""),
+                    "name": camera.get("name", ""),
+                    "intrinsics": params.get("intrinsics", {}),
+                    "extrinsics": params.get("extrinsics", {}),
+                    "projectionMatrix": params.get("projectionMatrix", []),
+                    "viewMatrix": params.get("viewMatrix", []),
+                }
+            else:
+                # 旧格式回退
+                info = {
+                    "pos": camera.get("pos", [0, 0, 0]),
+                    "target": camera.get("target", [0, 0, 0]),
+                    "focalMM": camera.get("focalMM", 35),
+                }
             return json.dumps(info, ensure_ascii=False)
         except Exception as e:
             _log("警告：构建 camera_json 失败：%s" % e)
