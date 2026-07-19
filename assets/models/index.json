@@ -7,6 +7,14 @@
       "description": "Unreal Engine 标准男性人体模型，含完整骨骼，约750KB。来源：Sketchfab (William Luque)，Sketchfab Standard License。",
       "defaultScale": 1.8,
       "autoGround": true
+    },
+    {
+      "id": "alicia-solid",
+      "name": "Alicia Solid (VRM女角色)",
+      "file": "AliciaSolid.vrm",
+      "description": "VRM Consortium 官方示例角色，动漫风格女性，含完整Humanoid骨骼+表情。CC0 协议，约7.9MB。",
+      "defaultScale": 1.7,
+      "autoGround": true
     }
   ]
 }

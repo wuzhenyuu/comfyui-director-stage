@@ -455,43 +455,9 @@ function injectTopbarControls() {
     }
   });
 
-  // ── VRM 角色加载逻辑 ──
+  // ── VRM 角色数据（回调见下方 _onVRMLoad 注册处）──
   let vrmData = null;
   let vrmLoaded = false;
-  window.__ds._onVRMLoad = async (url, fileName) => {
-    try {
-      showToast(`正在加载 VRM: ${fileName}…`, false);
-      vrmData = await loadVRMCharacter(url, scene);
-      // 创建 IK 目标球
-      scene.add(vrmData.ikTargetsGroup);
-
-      // 隐藏火柴人
-      figureGroup.visible = false;
-
-      // 注册 VRM 接口到 window
-      window.__ds.vrmData = vrmData;
-      window.__ds.isVRMMode = true;
-
-      vrmLoaded = true;
-      showToast(`✅ VRM 已加载：${fileName}（拖手脚球摆姿势）`, false);
-
-      // 自动更新关节引用
-      if (window.DS_FigureAPI) {
-        window.__ds._vrmJointRef = () => {
-          const vjoints = getVRMJointPositions(vrmData.jointMap);
-          return vjoints.map(p => {
-            const m = new THREE.Mesh();
-            m.position.set(p[0], p[1], p[2]);
-            m.userData = { index: vjoints.indexOf(p) };
-            return m;
-          });
-        };
-      }
-    } catch (e) {
-      console.error("VRM加载失败:", e);
-      showToast("VRM加载失败：" + (e.message || e), true);
-    }
-  };
 
   // ── M2 独有：线框模式 ──
   const wireLabel = document.createElement("label");
@@ -966,6 +932,25 @@ window.__ds = _dsRef;
 mountCameraGlobals(orbit);     // window.__ds.togglePovMode
 mountControlsGlobals();        // window.__ds.setObjectLocked / isObjectLocked
 mountThumbnailCapture();       // window.__ds.captureActiveThumbnail
+
+// VRM/GLB 回调注册（必须在 window.__ds 就绪后，不可提前）
+window.__ds._onVRMLoad = async (url, fileName) => {
+  try {
+    showToast(`正在加载 VRM: ${fileName}…`, false);
+    vrmData = await loadVRMCharacter(url, scene);
+    vrmData.ikTargets = createVRMIKTargets(vrmData.jointMap);
+    vrmData.ikTargetsGroup = vrmData.ikTargets.group;
+    scene.add(vrmData.ikTargetsGroup);
+    figureGroup.visible = false;
+    window.__ds.vrmData = vrmData;
+    window.__ds.isVRMMode = true;
+    vrmLoaded = true;
+    showToast(`VRM 已加载：${fileName}（拖手脚球摆姿势）`, false);
+  } catch (e) {
+    console.error("VRM加载失败:", e);
+    showToast("VRM加载失败：" + (e.message || e), true);
+  }
+};
 
 /* ========================= 主循环 ========================= */
 
