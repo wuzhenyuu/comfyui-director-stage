@@ -33,6 +33,9 @@ import { mountThumbnailCapture } from "./thumbnail-capture.js";
 /* ========================= DOM 引用 ========================= */
 
 const viewportEl = document.getElementById("viewport");
+// 诊断标记：在所有代码之前插入，验证 JS 是否执行
+viewportEl.innerHTML = '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#ff4444;font-size:24px;font-weight:bold;z-index:99;pointer-events:none;">● JS已执行 - 等待3D初始化...</div>';
+console.log("[3D导演台] main.js 开始执行, THREE 可用:", typeof THREE !== "undefined");
 const btnApply = document.getElementById("btnApply");
 const btnCancel = document.getElementById("btnCancel");
 const statusEl = document.getElementById("status");
@@ -47,20 +50,14 @@ const sceneSettingsPanelEl = document.getElementById("scene-settings-panel");
 /* ========================= 初始化渲染器/场景 ========================= */
 
 const renderer = createRenderer();
+console.log("[3D导演台] renderer 已创建, canvas:", renderer.domElement.width, "x", renderer.domElement.height);
 const scene = createScene();
+console.log("[3D导演台] scene 已创建, children:", scene.children.length);
+// 创建后清除诊断标记
+viewportEl.querySelector('div')?.remove();
 // 初始相机（M1 兼容，后续由 CameraManager 接管）
 const defaultCamera = createCamera(cameraSettings.focalToVFovDeg(35), 1);
 mountRenderer(viewportEl);
-
-// 延迟确保 DOM 布局完成后再应用视口尺寸
-setTimeout(() => applyViewport(viewportEl), 100);
-setTimeout(() => applyViewport(viewportEl), 500);
-
-// ResizeObserver 动态适配
-if (window.ResizeObserver) {
-  new ResizeObserver(() => applyViewport(viewportEl)).observe(viewportEl);
-}
-window.addEventListener("resize", () => applyViewport(viewportEl));
 
 /* ========================= CameraManager ========================= */
 

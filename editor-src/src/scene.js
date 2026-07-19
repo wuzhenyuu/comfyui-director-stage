@@ -74,14 +74,40 @@ export function getSceneHelpers() {
   return { grid, axes };
 }
 
-/** 将渲染器 canvas 挂到 DOM */
+/** 将渲染器 canvas 挂到 DOM，参考 R3F Canvas 的做法 */
 export function mountRenderer(viewportElem) {
   viewportEl = viewportElem;
   const canvas = renderer.domElement;
+  
+  // R3F 做法：canvas 绝对定位填充父容器，由 ResizeObserver 同步尺寸
   canvas.style.display = "block";
-  canvas.style.maxWidth = "100%";
-  canvas.style.maxHeight = "100%";
-  viewportEl.appendChild(canvas);
+  canvas.style.position = "absolute";
+  canvas.style.top = "0";
+  canvas.style.left = "0";
+  canvas.style.width = "100%";
+  canvas.style.height = "100%";
+  viewportElem.style.position = "relative";
+  viewportElem.style.overflow = "hidden";
+  viewportElem.appendChild(canvas);
+  
+  // 立即用 viewport 的实际尺寸设置 renderer
+  const w = viewportElem.clientWidth || 512;
+  const h = viewportElem.clientHeight || 768;
+  renderer.setSize(w, h, false);
+  
+  // ResizeObserver 动态适配
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => {
+      const cw = viewportElem.clientWidth || 512;
+      const ch = viewportElem.clientHeight || 768;
+      renderer.setSize(cw, ch, false);
+      const cam = getCamera();
+      if (cam) {
+        cam.aspect = cw / Math.max(ch, 1);
+        cam.updateProjectionMatrix();
+      }
+    }).observe(viewportElem);
+  }
 }
 
 /** 获取渲染器 canvas 的 bounding rect */
