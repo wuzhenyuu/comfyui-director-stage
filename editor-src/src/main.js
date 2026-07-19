@@ -20,6 +20,7 @@ import { PropManager } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
 import { createModelLibraryPanel } from "./model-library.js";
+import { loadGLBCharacter, createGLBIKTargets, getGLBJointPositions } from "./char-loader.js";
 import { createCharPropsPanel } from "./char-props-panel.js";
 import { createSceneSettingsPanel } from "./scene-settings-panel.js";
 import { exportProject, importProject } from "./project-io.js";
@@ -398,6 +399,61 @@ function injectTopbarControls() {
   ikLabel.appendChild(ikCheckbox);
   ikLabel.appendChild(document.createTextNode("🦴IK"));
 
+  // ── GLB 3D角色切换 ──
+  const glbBtn = document.createElement("button");
+  glbBtn.textContent = "🔄3D角色";
+  glbBtn.title = "加载UE人体模型替换火柴人（含骨骼IK）";
+  glbBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  let glbLoaded = false;
+  let glbData = null;
+  glbBtn.addEventListener("click", async () => {
+    if (glbLoaded) {
+      showToast("3D角色已加载", false);
+      return;
+    }
+    glbBtn.disabled = true;
+    glbBtn.textContent = "⏳加载中…";
+    try {
+      const url = "/director_stage/models/ue-mannequin-retopology.glb";
+      glbData = await loadGLBCharacter(url, scene);
+      // 创建 IK 目标球
+      const { targets, group } = createGLBIKTargets(glbData.jointMap);
+      glbData.ikTargets = targets;
+      glbData.ikTargetsGroup = group;
+      scene.add(group);
+      
+      // 隐藏火柴人
+      figureGroup.visible = false;
+      
+      // 注册 GLB 接口到 window
+      window.__ds.glbData = glbData;
+      window.__ds.isGLBMode = true;
+      
+      glbLoaded = true;
+      glbBtn.textContent = "🔄3D角色 ✅";
+      glbBtn.style.background = "#2f9e63";
+      showToast("3D角色已加载！拖手脚球摆姿势（先勾选🦴IK）", false);
+      
+      // 自动更新关节引用
+      if (window.DS_FigureAPI) {
+        window.__ds._glbJointRef = () => {
+          const joints = getGLBJointPositions(glbData.jointMap);
+          return joints.map(p => {
+            const m = new THREE.Mesh();
+            m.position.set(p[0], p[1], p[2]);
+            m.userData = { index: joints.indexOf(p) };
+            return m;
+          });
+        };
+      }
+    } catch (e) {
+      console.error("GLB加载失败:", e);
+      showToast("3D角色加载失败：" + (e.message || e), true);
+      glbBtn.disabled = false;
+      glbBtn.textContent = "🔄3D角色";
+    }
+  });
+
   // ── M2 独有：线框模式 ──
   const wireLabel = document.createElement("label");
   wireLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
@@ -537,12 +593,13 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", povBtn);
   afterBtn.insertAdjacentElement("afterend", importBtn);
   afterBtn.insertAdjacentElement("afterend", redoBtn);
-  afterBtn.insertAdjacentElement("afterend", undoBtn);
+  afterBtn.insertAdjacentElement("afterend", undobtn);
   afterBtn.insertAdjacentElement("afterend", hidePropsLabel);
   afterBtn.insertAdjacentElement("afterend", gridLabel);
   afterBtn.insertAdjacentElement("afterend", wireLabel);
   afterBtn.insertAdjacentElement("afterend", lockLabel);
   afterBtn.insertAdjacentElement("afterend", ikLabel);
+  afterBtn.insertAdjacentElement("afterend", glbBtn);
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
 
@@ -870,6 +927,124 @@ mountThumbnailCapture();       // window.__ds.captureActiveThumbnail
 
 applyViewport(viewportEl);
 updateStatus();
+
+// GLB IK 求解函数（驱动 UE mannequin 骨骼）
+function solveGLB_IK(data) {
+  const { jointMap, ikTargets, allBones } = data;
+  if (!jointMap || !ikTargets) return;
+
+  // 脚钉地
+  if (!glbData._rootPrev) {
+    const rootBone = jointMap.get(1); // Neck
+    if (rootBone) {
+      glbData._rootPrev = new THREE.Vector3();
+      rootBone.getWorldPosition(glbData._rootPrev);
+    }
+  } else {
+    const rootBone = jointMap.get(1);
+    if (rootBone) {
+      const nowPos = new THREE.Vector3();
+      rootBone.getWorldPosition(nowPos);
+      const delta = nowPos.clone().sub(glbData._rootPrev);
+      if (delta.length() > 0.001) {
+        for (const leg of ["rightLeg", "leftLeg"]) {
+          if (ikTargets[leg]) {
+            ikTargets[leg].target.position.sub(delta);
+            ikTargets[leg].pole.position.sub(delta);
+          }
+        }
+      }
+      glbData._rootPrev.copy(nowPos);
+    }
+  }
+
+  // IK 求解四链
+  const chains = {
+    rightArm: { root: 2, mid: 3, end: 4 },
+    leftArm:  { root: 5, mid: 6, end: 7 },
+    rightLeg: { root: 8, mid: 9, end: 10 },
+    leftLeg:  { root: 11, mid: 12, end: 13 },
+  };
+
+  for (const [name, chain] of Object.entries(chains)) {
+    const target = ikTargets[name];
+    if (!target) continue;
+    const chainBones = [chain.root, chain.mid, chain.end].map(i => jointMap.get(i)).filter(Boolean);
+    if (chainBones.length < 3) continue;
+
+    solveGLB_CCD(chainBones, target.target.position, target.pole.position);
+  }
+
+  // 刷新骨骼世界矩阵
+  allBones.forEach(b => b.updateMatrixWorld());
+}
+
+// 简化 CCD IK（针对 GLB 骨骼）
+function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001) {
+  const [root, mid, end] = chainBones;
+  const ev = new THREE.Vector3();
+  const bv = new THREE.Vector3();
+  const dv = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    end.getWorldPosition(ev);
+    if (ev.distanceTo(targetPos) < tol) break;
+
+    // 旋转 mid
+    mid.getWorldPosition(bv);
+    dv.copy(targetPos).sub(bv).normalize();
+    ev.sub(bv).normalize();
+    q.setFromUnitVectors(ev, dv);
+    applyWorldRotation(mid, q);
+
+    end.getWorldPosition(ev);
+    if (ev.distanceTo(targetPos) < tol) break;
+
+    // 旋转 root
+    root.getWorldPosition(bv);
+    dv.copy(targetPos).sub(bv).normalize();
+    ev.sub(bv).normalize();
+    q.setFromUnitVectors(ev, dv);
+    applyWorldRotation(root, q);
+  }
+
+  // Pole 约束
+  if (polePos) {
+    const rp = new THREE.Vector3(); root.getWorldPosition(rp);
+    const ep = new THREE.Vector3(); end.getWorldPosition(ep);
+    const mp = new THREE.Vector3(); mid.getWorldPosition(mp);
+    const axis = ep.clone().sub(rp).normalize();
+    const mproj = mp.clone().sub(rp);
+    const pproj = polePos.clone().sub(rp);
+    mproj.sub(axis.clone().multiplyScalar(mproj.dot(axis)));
+    pproj.sub(axis.clone().multiplyScalar(pproj.dot(axis)));
+    if (mproj.length() > 1e-6 && pproj.length() > 1e-6) {
+      mproj.normalize(); pproj.normalize();
+      const dot = Math.max(-1, Math.min(1, mproj.dot(pproj)));
+      const angle = Math.acos(dot);
+      if (angle > 1e-6) {
+        const cross = new THREE.Vector3().crossVectors(mproj, pproj);
+        q.setFromAxisAngle(axis, cross.dot(axis) > 0 ? angle : -angle);
+        applyWorldRotation(root, q);
+      }
+    }
+  }
+}
+
+function applyWorldRotation(bone, worldQ) {
+  const pq = new THREE.Quaternion();
+  if (bone.parent && bone.parent.isBone) {
+    bone.parent.getWorldQuaternion(pq);
+    pq.invert();
+    const localQ = pq.clone().multiply(worldQ).multiply(pq.clone().invert());
+    bone.quaternion.premultiply(localQ);
+  } else {
+    bone.quaternion.premultiply(worldQ);
+  }
+  bone.quaternion.normalize();
+}
+
 renderer.setAnimationLoop(() => {
   orbit.update();
   // 把 OrbitControls 的相机状态同步回 CameraManager（单向同步，无反馈环）
@@ -878,6 +1053,12 @@ renderer.setAnimationLoop(() => {
     ac.pos = ac.camera.position.toArray();
     ac.target = orbit.target.toArray();
   }
+
+  // GLB 角色模式：使用 GLB 骨骼 IK 求解
+  if (glbData && glbData.jointMap && glbData.ikTargets) {
+    solveGLB_IK(glbData);
+  }
+  
   updateBones(joints, bones);
   renderer.render(scene, ac ? ac.camera : defaultCamera);
 });

@@ -247,14 +247,20 @@ function getPickableObjects() {
 
   const fkMode = window.__ds?.fkMode;
 
+  // GLB 角色的 IK 目标球
+  if (window.__ds?.glbData?.ikTargets) {
+    const glbTargets = window.__ds.glbData.ikTargets;
+    for (const t of Object.values(glbTargets)) {
+      objects.push(t.target, t.pole);
+    }
+  }
+
   if (char) {
     if (fkMode) {
-      // IK 模式：仅 IK targets 和 poles 可拾取
       for (const state of Object.values(char.ikState)) {
         objects.push(state.target, state.pole);
       }
     } else {
-      // FK 模式（默认）：所有关节球可拖拽
       objects.push(...char.jointSpheres);
     }
   } else if (window.__ds?.joints) {
