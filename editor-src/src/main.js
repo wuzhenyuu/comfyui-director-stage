@@ -21,6 +21,7 @@ import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
 import { createModelLibraryPanel } from "./model-library.js";
 import { loadGLBCharacter, createGLBIKTargets, getGLBJointPositions } from "./char-loader.js";
+import { loadVRMCharacter, createVRMIKTargets, getVRMJointPositions, createVRMImport } from "./vrm-loader.js";
 import { createCharPropsPanel } from "./char-props-panel.js";
 import { createSceneSettingsPanel } from "./scene-settings-panel.js";
 import { exportProject, importProject } from "./project-io.js";
@@ -454,6 +455,44 @@ function injectTopbarControls() {
     }
   });
 
+  // ── VRM 角色加载逻辑 ──
+  let vrmData = null;
+  let vrmLoaded = false;
+  window.__ds._onVRMLoad = async (url, fileName) => {
+    try {
+      showToast(`正在加载 VRM: ${fileName}…`, false);
+      vrmData = await loadVRMCharacter(url, scene);
+      // 创建 IK 目标球
+      scene.add(vrmData.ikTargetsGroup);
+
+      // 隐藏火柴人
+      figureGroup.visible = false;
+
+      // 注册 VRM 接口到 window
+      window.__ds.vrmData = vrmData;
+      window.__ds.isVRMMode = true;
+
+      vrmLoaded = true;
+      showToast(`✅ VRM 已加载：${fileName}（拖手脚球摆姿势）`, false);
+
+      // 自动更新关节引用
+      if (window.DS_FigureAPI) {
+        window.__ds._vrmJointRef = () => {
+          const vjoints = getVRMJointPositions(vrmData.jointMap);
+          return vjoints.map(p => {
+            const m = new THREE.Mesh();
+            m.position.set(p[0], p[1], p[2]);
+            m.userData = { index: vjoints.indexOf(p) };
+            return m;
+          });
+        };
+      }
+    } catch (e) {
+      console.error("VRM加载失败:", e);
+      showToast("VRM加载失败：" + (e.message || e), true);
+    }
+  };
+
   // ── M2 独有：线框模式 ──
   const wireLabel = document.createElement("label");
   wireLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
@@ -529,6 +568,9 @@ function injectTopbarControls() {
   // ── GLB 导入按钮 ──
   const { button: importBtn, fileInput } = createGLBImport(propManager, showToast);
 
+  // ── VRM 导入按钮 ──
+  const { button: vrmImportBtn, fileInput: vrmFileInput } = createVRMImport(showToast);
+
   // ── M2 新增：POV 切换 ──
   const povBtn = document.createElement("button");
   povBtn.id = "btnPov";
@@ -592,6 +634,7 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", exportProjBtn);
   afterBtn.insertAdjacentElement("afterend", povBtn);
   afterBtn.insertAdjacentElement("afterend", importBtn);
+  afterBtn.insertAdjacentElement("afterend", vrmImportBtn);
   afterBtn.insertAdjacentElement("afterend", redoBtn);
   afterBtn.insertAdjacentElement("afterend", undobtn);
   afterBtn.insertAdjacentElement("afterend", hidePropsLabel);
@@ -603,8 +646,9 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
 
-  // Append hidden file input to body
+  // Append hidden file inputs to body
   document.body.appendChild(fileInput);
+  document.body.appendChild(vrmFileInput);
 
   cameraSettings.bindUI(focalSlider, focalLabel, thirdsCheckbox);
 
@@ -699,7 +743,7 @@ async function onApply() {
     const sceneGz = encodeSceneGz(curJoints, cameraSettings.getFocalLength());
 
     // M2: batch export across all cameras
-    const enabledPasses = new Set(["openpose", "depth", "normal", "lineart"]);
+    const enabledPasses = new Set(["openpose", "depth", "normal", "lineart", "preview"]);
     const characters = getCharacterGroups();
 
     // Build scene JSON for serialization
@@ -908,7 +952,7 @@ const _dsRef = {
     getSceneGz: () => encodeSceneGz(_dsRef.joints, cameraSettings.getFocalLength()),
     exportW: getExportWH()[0],
     exportH: getExportWH()[1],
-    enabledPasses: new Set(enabledPasses || ["openpose", "depth", "normal", "lineart"]),
+    enabledPasses: new Set(enabledPasses || ["openpose", "depth", "normal", "lineart", "preview"]),
     onProgress: () => {},
     characters: getCharacterGroups(),
   }),
@@ -1045,6 +1089,56 @@ function applyWorldRotation(bone, worldQ) {
   bone.quaternion.normalize();
 }
 
+// VRM IK 求解函数（驱动 VRM humanoid 骨骼，复用 CCD 算法）
+function solveVRM_IK(data) {
+  const { jointMap, ikTargets, allBones } = data;
+  if (!jointMap || !ikTargets) return;
+
+  // 脚钉地（与 GLB 逻辑一致）
+  if (!vrmData._rootPrev) {
+    const rootBone = jointMap.get(1); // Neck
+    if (rootBone) {
+      vrmData._rootPrev = new THREE.Vector3();
+      rootBone.getWorldPosition(vrmData._rootPrev);
+    }
+  } else {
+    const rootBone = jointMap.get(1);
+    if (rootBone) {
+      const nowPos = new THREE.Vector3();
+      rootBone.getWorldPosition(nowPos);
+      const delta = nowPos.clone().sub(vrmData._rootPrev);
+      if (delta.length() > 0.001) {
+        for (const leg of ["rightLeg", "leftLeg"]) {
+          if (ikTargets[leg]) {
+            ikTargets[leg].target.position.sub(delta);
+            ikTargets[leg].pole.position.sub(delta);
+          }
+        }
+      }
+      vrmData._rootPrev.copy(nowPos);
+    }
+  }
+
+  // IK 求解四链（复用 solveGLB_CCD）
+  const chains = {
+    rightArm: { root: 2, mid: 3, end: 4 },
+    leftArm:  { root: 5, mid: 6, end: 7 },
+    rightLeg: { root: 8, mid: 9, end: 10 },
+    leftLeg:  { root: 11, mid: 12, end: 13 },
+  };
+
+  for (const [name, chain] of Object.entries(chains)) {
+    const target = ikTargets[name];
+    if (!target) continue;
+    const chainBones = [chain.root, chain.mid, chain.end].map(i => jointMap.get(i)).filter(Boolean);
+    if (chainBones.length < 3) continue;
+    solveGLB_CCD(chainBones, target.target.position, target.pole.position);
+  }
+
+  // 刷新骨骼世界矩阵
+  allBones.forEach(b => b.updateMatrixWorld());
+}
+
 renderer.setAnimationLoop(() => {
   orbit.update();
   // 把 OrbitControls 的相机状态同步回 CameraManager（单向同步，无反馈环）
@@ -1057,6 +1151,11 @@ renderer.setAnimationLoop(() => {
   // GLB 角色模式：使用 GLB 骨骼 IK 求解
   if (glbData && glbData.jointMap && glbData.ikTargets) {
     solveGLB_IK(glbData);
+  }
+
+  // VRM 角色模式：使用 VRM 骨骼 IK 求解
+  if (vrmData && vrmData.jointMap && vrmData.ikTargets) {
+    solveVRM_IK(vrmData);
   }
   
   updateBones(joints, bones);

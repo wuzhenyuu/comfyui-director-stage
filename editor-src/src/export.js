@@ -322,6 +322,7 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
   const poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
   const depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, []);
   const normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, []);
+  const previewCv = renderPreviewCanvas(scene, cam, renderer, exportW, exportH, []);
 
   // Lineart from depth+normal
   const lineartCv = renderLineartCanvas(depthCv, normalCv, exportW, exportH);
@@ -329,11 +330,12 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
   grid.visible = prevGrid;
   axes.visible = prevAxes;
 
-  const [openpose, depth, normal, lineart] = await Promise.all([
+  const [openpose, depth, normal, lineart, preview] = await Promise.all([
     uploadCanvas(poseCv, `director_pose_${t}.png`),
     uploadCanvas(depthCv, `director_depth_${t}.png`),
     uploadCanvas(normalCv, `director_normal_${t}.png`),
     uploadCanvas(lineartCv, `director_lineart_${t}.png`),
+    uploadCanvas(previewCv, `director_preview_${t}.png`),
   ]);
 
   // 提取完整相机参数
@@ -342,11 +344,11 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
   // M1 backward-compat: put files at top level AND include v2 cameras array
   const manifest = {
     version: 2,
-    files: { openpose, depth, normal, lineart },
+    files: { openpose, depth, normal, lineart, preview },
     cameras: [{
       id: "cam_01",
       name: "主镜头",
-      files: { openpose, depth, normal, lineart },
+      files: { openpose, depth, normal, lineart, preview },
       width: exportW,
       height: exportH,
       focalMM: 35,

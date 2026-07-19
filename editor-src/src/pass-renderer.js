@@ -1,5 +1,5 @@
 /**
- * pass-renderer.js — 渲染通道：Normal / Depth / Lineart / CharacterMask / OpenPose
+ * pass-renderer.js — 渲染通道：Normal / Depth / Lineart / CharacterMask / OpenPose / Preview
  *
  * 所有通道输出 canvas 尺寸严格等于 nodeWidth × nodeHeight。
  */
@@ -452,4 +452,73 @@ export function renderOpenPoseCanvas(joints, camera, w, h) {
   });
 
   return cv;
+}
+
+// ─── Preview pass（灰模渲染）───
+
+const _previewMat = new THREE.MeshToonMaterial({ color: 0xcccccc });
+
+// 三点光：主光 + 补光 + 背光
+const _previewLights = {
+  key:  new THREE.DirectionalLight(0xffffff, 1.0),
+  fill: new THREE.DirectionalLight(0xffffff, 0.3),
+  rim:  new THREE.DirectionalLight(0xffffff, 0.5),
+};
+_previewLights.key.position.set(2, 3, 2);
+_previewLights.fill.position.set(-2, 1, 1);
+_previewLights.rim.position.set(0, 2, -3);
+
+/**
+ * 灰模渲染：将所有 mesh 替换为灰色 toon 材质 + 三点光，输出带光影的灰度参考图。
+ * 用于 IPAdapter / 重绘参考。
+ *
+ * @param {THREE.Scene} scene
+ * @param {THREE.PerspectiveCamera} camera
+ * @param {THREE.WebGLRenderer} renderer
+ * @param {number} w
+ * @param {number} h
+ * @param {THREE.Object3D[]} hiddenObjects
+ * @returns {HTMLCanvasElement}
+ */
+export function renderPreviewCanvas(scene, camera, renderer, w, h, hiddenObjects = []) {
+  // 1. 隐藏辅助对象
+  const vis = hiddenObjects.map((o) => {
+    const v = o.visible;
+    o.visible = false;
+    return { obj: o, was: v };
+  });
+
+  // 2. 保存原始材质，替换为灰色 toon
+  const prevMats = [];
+  scene.traverseVisible((child) => {
+    if ((child.isMesh || child.isSkinnedMesh) && child.material) {
+      prevMats.push({ obj: child, mat: child.material });
+      child.material = _previewMat;
+    }
+  });
+
+  // 3. 添加三点光
+  const lightsToAdd = Object.values(_previewLights);
+  lightsToAdd.forEach((l) => scene.add(l));
+
+  // 4. 保存背景色，设为中性灰
+  const prevBg = scene.background;
+  scene.background = new THREE.Color(0x808080);
+
+  // 5. 渲染到 RenderTarget
+  const rt = makeRT(w, h);
+  renderer.setRenderTarget(rt);
+  renderer.render(scene, camera);
+
+  const buf = readPixels(renderer, rt, w, h);
+  renderer.setRenderTarget(null);
+  rt.dispose();
+
+  // 6. 恢复：移除灯光、恢复材质、恢复背景、恢复可见性
+  lightsToAdd.forEach((l) => scene.remove(l));
+  prevMats.forEach(({ obj, mat }) => { obj.material = mat; });
+  scene.background = prevBg;
+  vis.forEach(({ obj, was }) => { obj.visible = was; });
+
+  return pixelsToCanvas(buf, w, h, true);
 }
