@@ -4,7 +4,7 @@
  */
 import * as THREE from "three";
 import { T_POSE } from "./constants.js";
-import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene, getCharacterGroups, setWireframeMode } from "./scene.js";
+import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene, getCharacterGroups, setWireframeMode, drawFrame } from "./scene.js";
 import { createJoints, createBones, updateBones } from "./figure.js";
 import { createOrbit, createTransform, selectJoint, getSelected, setupPointerEvents, setupKeyboardShortcuts, getOrbit, getTransform, isBoneLockEnabled, setBoneLockEnabled } from "./controls.js";
 import { pushUndo, performUndo, performRedo, getUndoDepth, getRedoDepth, snapshot, restore } from "./undo.js";
@@ -1131,25 +1131,27 @@ function solveVRM_IK(data) {
   allBones.forEach(b => b.updateMatrixWorld());
 }
 
-renderer.setAnimationLoop(() => {
+// 动画循环：2D Canvas 渲染（零 WebGL 依赖）
+function renderLoop() {
+  // 更新 OrbitControls 的相机（用于关节投影计算）
   orbit.update();
-  // 把 OrbitControls 的相机状态同步回 CameraManager（单向同步，无反馈环）
   const ac = cameraManager.getActiveCamera();
   if (ac) {
     ac.pos = ac.camera.position.toArray();
     ac.target = orbit.target.toArray();
   }
-
-  // GLB 角色模式：使用 GLB 骨骼 IK 求解
-  if (glbData && glbData.jointMap && glbData.ikTargets) {
-    solveGLB_IK(glbData);
-  }
-
-  // VRM 角色模式：使用 VRM 骨骼 IK 求解
-  if (vrmData && vrmData.jointMap && vrmData.ikTargets) {
-    solveVRM_IK(vrmData);
-  }
   
+  // FK模式更新骨骼
   updateBones(joints, bones);
-  renderer.render(scene, ac ? ac.camera : defaultCamera);
-});
+  
+  // 2D 绘制
+  const camRef = ac ? ac.camera : defaultCamera;
+  drawFrame(figureGroup, joints, camRef, window.__ds?.fkMode);
+  
+  // 如果有GLB/VRM，同步骨骼
+  if (glbData && glbData.jointMap && glbData.ikTargets) solveGLB_IK(glbData);
+  if (vrmData && vrmData.jointMap && vrmData.ikTargets) solveVRM_IK(vrmData);
+  
+  requestAnimationFrame(renderLoop);
+}
+requestAnimationFrame(renderLoop);

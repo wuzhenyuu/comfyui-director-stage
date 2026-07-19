@@ -1,5 +1,8 @@
 /**
- * scene.js — Three.js 渲染器、场景、相机、灯光初始化
+ * scene.js — 2D Canvas 渲染（替代 Three.js WebGL）
+ * 
+ * 用原生 Canvas 2D 绘制火柴人，零 WebGL 依赖，确保在任何环境都能显示。
+ * 保留 OpenPose/Depth 离屏渲染的三维能力用于导出通道。
  */
 import * as THREE from "three";
 
@@ -10,43 +13,44 @@ let grid = null;
 let axes = null;
 let viewportEl = null;
 
-/** 创建 WebGLRenderer */
+// 2D 渲染上下文
+let ctx2d = null;
+let canvas2d = null;
+
+/** 创建 2D Canvas 渲染器 */
 export function createRenderer() {
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
-  renderer.setSize(512, 768); // 初始设置合理尺寸，避免 1x1 导致不可见
+  canvas2d = document.createElement("canvas");
+  canvas2d.width = 512;
+  canvas2d.height = 768;
+  ctx2d = canvas2d.getContext("2d");
+  
+  // 同时创建 Three.js 用于导出渲染
+  renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+  renderer.setSize(512, 768);
+  renderer.setPixelRatio(1); // 不求高DPI
+  
   return renderer;
 }
 
-/** 创建场景（含灯光、网格、坐标轴） */
+/** 创建 Three.js 场景（仅用于导出） */
 export function createScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x222233);
-
+  
   grid = new THREE.GridHelper(6, 12, 0x888899, 0x333344);
   scene.add(grid);
-
   axes = new THREE.AxesHelper(0.6);
   scene.add(axes);
-
-  // 诊断信标：原点红色大球，确认渲染正常
-  const beacon = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 16, 8),
-    new THREE.MeshStandardMaterial({ color: 0xff0000, emissive: 0x440000, roughness: 0.3 })
-  );
-  beacon.position.set(0, 1, 0);
-  beacon.name = "diagnostic_beacon";
-  scene.add(beacon);
-
+  
   scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x34322c, 1.5));
   const dirLight = new THREE.DirectionalLight(0xffffff, 2);
   dirLight.position.set(2.5, 4, 3);
   scene.add(dirLight);
-
+  
   return scene;
 }
 
-/** 创建 PerspectiveCamera（初始 fov 由焦距决定） */
+/** 创建相机（用于坐标投影） */
 export function createCamera(fovDeg, aspect) {
   camera = new THREE.PerspectiveCamera(fovDeg, aspect, 0.1, 100);
   camera.position.set(0, 1.4, 3.2);
@@ -54,133 +58,161 @@ export function createCamera(fovDeg, aspect) {
   return camera;
 }
 
-/** 获取当前相机 */
-export function getCamera() {
-  return camera;
-}
+export function getCamera() { return camera; }
+export function getRenderer() { return renderer; }
+export function getScene() { return scene; }
+export function getSceneHelpers() { return { grid, axes }; }
 
-/** 获取当前渲染器 */
-export function getRenderer() {
-  return renderer;
-}
-
-/** 获取场景 */
-export function getScene() {
-  return scene;
-}
-
-/** 获取 Grid/Axes 引用（depth 导出时需要隐藏它们） */
-export function getSceneHelpers() {
-  return { grid, axes };
-}
-
-/** 将渲染器 canvas 挂到 DOM，参考 R3F Canvas 的做法 */
+/** 将 2D canvas 挂载到 DOM */
 export function mountRenderer(viewportElem) {
   viewportEl = viewportElem;
-  const canvas = renderer.domElement;
   
-  // R3F 做法：canvas 绝对定位填充父容器，由 ResizeObserver 同步尺寸
-  canvas.style.display = "block";
-  canvas.style.position = "absolute";
-  canvas.style.top = "0";
-  canvas.style.left = "0";
-  canvas.style.width = "100%";
-  canvas.style.height = "100%";
+  canvas2d.style.display = "block";
+  canvas2d.style.position = "absolute";
+  canvas2d.style.top = "0";
+  canvas2d.style.left = "0";
+  canvas2d.style.width = "100%";
+  canvas2d.style.height = "100%";
   viewportElem.style.position = "relative";
   viewportElem.style.overflow = "hidden";
-  viewportElem.appendChild(canvas);
+  viewportElem.appendChild(canvas2d);
   
-  // 立即用 viewport 的实际尺寸设置 renderer
+  // 初始尺寸
   const w = viewportElem.clientWidth || 512;
   const h = viewportElem.clientHeight || 768;
-  renderer.setSize(w, h, false);
+  canvas2d.width = w * 2;
+  canvas2d.height = h * 2;
+  ctx2d = canvas2d.getContext("2d");
+  ctx2d.scale(2, 2);
   
-  // ResizeObserver 动态适配
+  // ResizeObserver
   if (window.ResizeObserver) {
     new ResizeObserver(() => {
       const cw = viewportElem.clientWidth || 512;
       const ch = viewportElem.clientHeight || 768;
-      renderer.setSize(cw, ch, false);
-      const cam = getCamera();
-      if (cam) {
-        cam.aspect = cw / Math.max(ch, 1);
-        cam.updateProjectionMatrix();
-      }
+      canvas2d.width = cw * 2;
+      canvas2d.height = ch * 2;
+      ctx2d = canvas2d.getContext("2d");
+      ctx2d.scale(2, 2);
     }).observe(viewportElem);
   }
 }
 
-/** 获取渲染器 canvas 的 bounding rect */
 export function getCanvasRect() {
-  if (!renderer || !viewportEl) return null;
-  return renderer.domElement.getBoundingClientRect();
+  if (!canvas2d || !viewportEl) return null;
+  const rect = viewportEl.getBoundingClientRect();
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
 
-/* ======================== M2 扩展 ======================== */
-
-/**
- * 获取所有场景中的可视网格对象（用于渲染通道遍历）
- */
-export function getAllSceneMeshObjects() {
-  const objects = [];
-  if (!scene) return objects;
-  scene.traverseVisible((child) => {
-    if (child.isMesh || child.isSkinnedMesh) {
-      objects.push(child);
-    }
-  });
-  return objects;
+export function mountRendererCanvas(viewportElem) {
+  mountRenderer(viewportElem);
 }
 
-/**
- * 更新相机引用（M2 用 CameraManager 替换默认相机时调用）
- */
-export function setCamera(newCamera) {
-  camera = newCamera;
-}
-
-/**
- * 设置线框模式（所有 Material wireframe）
- */
-export function setWireframeMode(enabled) {
-  if (!scene) return;
-  scene.traverse((child) => {
-    if (child.isMesh && child.material && !child.userData._noWireframe) {
-      if (Array.isArray(child.material)) {
-        child.material.forEach((m) => { m.wireframe = enabled; });
-      } else {
-        child.material.wireframe = enabled;
-      }
-    }
-  });
-}
-
-/**
- * 获取当前所有角色组（从 DS_FigureAPI 或 fallback 到 M1 figureGroup）
- * @returns {Array<{id:string, group:THREE.Group}>}
- */
 export function getCharacterGroups() {
   const groups = [];
-  if (!scene) return groups;
-
+  if (!window.DS_FigureAPI) return groups;
   try {
-    if (window.DS_FigureAPI && window.DS_FigureAPI.getAllCharacters) {
-      const chars = window.DS_FigureAPI.getAllCharacters();
-      if (chars && typeof chars.forEach === "function") {
-        chars.forEach((ch, id) => {
-          const group = ch.skeletonGroup || ch.group || ch;
-          groups.push({ id: String(id), group });
-        });
-        return groups;
-      }
+    const chars = window.DS_FigureAPI.getAllCharacters();
+    if (chars && typeof chars.forEach === "function") {
+      chars.forEach((ch, id) => {
+        groups.push({ id: String(id), group: ch.skeletonGroup || ch });
+      });
     }
-  } catch (e) {
-    // DS_FigureAPI not ready
-  }
-
-  // Fallback: M1 single figureGroup
-  if (window.__ds && window.__ds.figureGroup) {
-    groups.push({ id: "char_01", group: window.__ds.figureGroup });
-  }
+  } catch (e) { /* ignore */ }
   return groups;
 }
+
+export function getAllSceneMeshObjects() {
+  return [];
+}
+
+/** 2D绘图：清屏+网格+火柴人+相机投影 */
+export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
+  if (!ctx2d || !canvas2d) return;
+  
+  const w = viewportEl ? viewportEl.clientWidth : canvas2d.width / 2;
+  const h = viewportEl ? viewportEl.clientHeight : canvas2d.height / 2;
+  if (w <= 0 || h <= 0) return;
+  
+  // 清屏
+  ctx2d.clearRect(0, 0, w, h);
+  
+  // 背景
+  ctx2d.fillStyle = "#222233";
+  ctx2d.fillRect(0, 0, w, h);
+  
+  // 网格
+  drawGrid(w, h);
+  
+  // 火柴人（当前活动角色）
+  drawStickFigure(joints, cameraRef, w, h);
+  
+  // 信标
+  const beaconPos = new THREE.Vector3(0, 1, 0);
+  beaconPos.project(cameraRef);
+  const bx = (beaconPos.x + 1) / 2 * w;
+  const by = (1 - beaconPos.y) / 2 * h;
+  ctx2d.beginPath();
+  ctx2d.arc(bx, by, 8, 0, Math.PI * 2);
+  ctx2d.fillStyle = "#ff4444";
+  ctx2d.fill();
+}
+
+function drawGrid(w, h) {
+  ctx2d.strokeStyle = "#444466";
+  ctx2d.lineWidth = 0.5;
+  const step = 40;
+  for (let x = 0; x <= w; x += step) {
+    ctx2d.beginPath(); ctx2d.moveTo(x, 0); ctx2d.lineTo(x, h); ctx2d.stroke();
+  }
+  for (let y = 0; y <= h; y += step) {
+    ctx2d.beginPath(); ctx2d.moveTo(0, y); ctx2d.lineTo(w, y); ctx2d.stroke();
+  }
+}
+
+function drawStickFigure(joints, cameraRef, w, h) {
+  if (!joints || joints.length < 18) return;
+  
+  // COCO limbSeq
+  const limbSeq = [
+    [1,2],[1,5],[2,3],[3,4],[5,6],[6,7],[1,8],[8,9],[9,10],
+    [1,11],[11,12],[12,13],[1,0],[0,14],[14,16],[0,15],[15,17]
+  ];
+  const colors = [
+    "#ff0000","#ff5500","#ffaa00","#ffff00","#aaff00","#55ff00","#00ff00",
+    "#00ff55","#00ffaa","#00ffff","#00aaff","#0055ff","#0000ff","#5500ff",
+    "#aa00ff","#ff00ff","#ff00aa"
+  ];
+  
+  const screenPos = joints.map(j => {
+    const v = new THREE.Vector3(j.position.x, j.position.y, j.position.z);
+    v.project(cameraRef);
+    return { x: (v.x + 1) / 2 * w, y: (1 - v.y) / 2 * h };
+  });
+  
+  // 画肢
+  limbSeq.forEach(([a,b], i) => {
+    const pa = screenPos[a], pb = screenPos[b];
+    ctx2d.beginPath();
+    ctx2d.moveTo(pa.x, pa.y);
+    ctx2d.lineTo(pb.x, pb.y);
+    ctx2d.strokeStyle = colors[i % colors.length];
+    ctx2d.lineWidth = 3;
+    ctx2d.stroke();
+  });
+  
+  // 画关节
+  screenPos.forEach((p, i) => {
+    ctx2d.beginPath();
+    ctx2d.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    const c = colors[i % colors.length];
+    ctx2d.fillStyle = c;
+    ctx2d.fill();
+    ctx2d.strokeStyle = "#000";
+    ctx2d.lineWidth = 1;
+    ctx2d.stroke();
+  });
+}
+
+/** 线框模式切换（2D模式无操作） */
+export function setWireframeMode() {}
