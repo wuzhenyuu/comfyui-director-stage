@@ -6,6 +6,7 @@
  *   ➕ 添加  /  🗑️ 删除  /  ✏️ 重命名
  */
 import { CHARACTER_COLORS } from "./constants.js";
+import { MAX_CHARACTERS } from "./figure.js";
 
 /**
  * 创建角色面板 DOM
@@ -18,9 +19,10 @@ import { CHARACTER_COLORS } from "./constants.js";
  */
 export function createCharPanel(container, onAdd, onDelete, onRename, onSelect) {
   const panel = document.createElement("div");
-  panel.id = "char-panel";
+  panel.id = "char-mgr-panel"; // 与侧边栏容器 #char-panel 区分（避免 id 冲突）
+  // 作为 #char-panel 侧边栏 tab 页内的上区块（通宽，底部分隔线接姿势库）
   panel.style.cssText =
-    "width:200px;flex:0 0 auto;background:#171a22;border-right:1px solid #2a2f3d;overflow-y:auto;display:flex;flex-direction:column;user-select:none;";
+    "width:100%;background:#171a22;border-bottom:1px solid #2a2f3d;display:flex;flex-direction:column;user-select:none;max-height:45%;";
 
   // 标题
   const header = document.createElement("div");
@@ -48,8 +50,29 @@ export function createCharPanel(container, onAdd, onDelete, onRename, onSelect) 
   container.appendChild(panel);
 
   // 事件绑定
-  document.getElementById("btnCharAdd")?.addEventListener("click", () => {
+  const addBtn = document.getElementById("btnCharAdd");
+
+  /** 契约5：根据当前角色数刷新「添加」按钮可用状态（达上限置灰） */
+  function updateAddBtnState(count) {
+    if (!addBtn) return;
+    const full = count >= MAX_CHARACTERS;
+    addBtn.disabled = full;
+    addBtn.title = full ? "最多 8 人" : "添加角色";
+    addBtn.style.opacity = full ? "0.4" : "";
+    addBtn.style.cursor = full ? "not-allowed" : "";
+  }
+
+  addBtn?.addEventListener("click", () => {
+    // 契约5：防御性拦截——即使按钮状态未刷新，达上限也不触发添加
+    const count = window.DS_FigureAPI?.getCharacterCount?.() ?? 0;
+    if (count >= MAX_CHARACTERS) {
+      window.__ds?.showToast?.("最多 8 人");
+      updateAddBtnState(count);
+      return;
+    }
     if (onAdd) onAdd();
+    // 添加后刷新按钮状态（onAdd 可能因 create() 返回 null 而失败，以实际数量为准）
+    updateAddBtnState(window.DS_FigureAPI?.getCharacterCount?.() ?? count);
   });
   document.getElementById("btnCharDel")?.addEventListener("click", () => {
     const activeId = panel.dataset.activeId;
@@ -74,6 +97,12 @@ export function createCharPanel(container, onAdd, onDelete, onRename, onSelect) 
     if (!listEl) return;
     listEl.innerHTML = "";
     panel.dataset.activeId = activeId;
+
+    // 判空保护：create() 达上限返回 null 时，调用方可能把 null 混进列表
+    chars = (chars || []).filter(Boolean);
+
+    // 契约5：刷新「添加」按钮置灰状态
+    updateAddBtnState(chars.length);
 
     for (const char of chars) {
       const item = document.createElement("div");
@@ -124,6 +153,11 @@ export function createCharPanel(container, onAdd, onDelete, onRename, onSelect) 
       listEl.appendChild(item);
     }
   }
+
+  // 契约5：角色增删时（ds-char-changed）同步刷新按钮状态
+  window.addEventListener("ds-char-changed", () => {
+    updateAddBtnState(window.DS_FigureAPI?.getCharacterCount?.() ?? 0);
+  });
 
   return { el: panel, render };
 }

@@ -23,6 +23,7 @@ import { createModelLibraryPanel } from "./model-library.js";
 import { loadGLBCharacter, createGLBIKTargets, getGLBJointPositions } from "./char-loader.js";
 import { loadVRMCharacter, createVRMIKTargets, getVRMJointPositions, createVRMImport } from "./vrm-loader.js";
 import { createCharPropsPanel } from "./char-props-panel.js";
+import { createCharPanel, nextCharName } from "./char-panel.js";
 import { createSceneSettingsPanel } from "./scene-settings-panel.js";
 import { exportProject, importProject } from "./project-io.js";
 import "./clipboard.js";  // 注册 copyToClipboard/pasteFromClipboard 和键盘快捷键
@@ -263,6 +264,52 @@ sidebarTabs.addEventListener("click", (e) => {
 
 /* ========================= 填充面板 ========================= */
 
+// 角色管理面板（👥 添加/删除/重命名/切换，挂在姿势库上方）
+const charMgrUI = createCharPanel(
+  charPanel,
+  () => {
+    // onAdd：创建 + 激活 + 刷新（create 达上限返回 null，toast 已弹出）
+    const api = window.DS_FigureAPI;
+    if (!api) return;
+    pushUndo(null);
+    const c = api.addCharacter(nextCharName(api.getCharacterCount()));
+    if (!c) return;
+    api.setActive(c.id);
+    refreshCharList();
+    showToast(`已添加「${c.name}」`, false);
+  },
+  (id) => {
+    // onDelete：至少保留 1 人
+    const api = window.DS_FigureAPI;
+    if (!api) return;
+    if (api.getCharacterCount() <= 1) {
+      showToast("至少保留 1 人", false);
+      return;
+    }
+    pushUndo(null);
+    api.removeCharacter(id);
+    refreshCharList();
+  },
+  (id, newName) => {
+    const c = window.DS_FigureAPI?.getCharacter(id);
+    if (c) { c.name = newName; refreshCharList(); }
+  },
+  (id) => {
+    window.DS_FigureAPI?.setActive(id);
+    refreshCharList();
+  }
+);
+
+/** 刷新角色列表（char.color 本身是 CSS 字符串，直接可用） */
+function refreshCharList() {
+  const api = window.DS_FigureAPI;
+  if (!api) return;
+  charMgrUI.render(api.getCharacterList(), api.getActiveCharacter()?.id);
+}
+refreshCharList();
+// 切角色/点中自动激活时同步列表高亮（controls.js updateCharPanelIfExists 会 dispatch）
+window.addEventListener("ds-char-changed", refreshCharList);
+
 // 角色面板 — 姿势库
 const posePanel = createPosePanel();
 charPanel.appendChild(posePanel);
@@ -408,6 +455,22 @@ function injectTopbarControls() {
   });
   ikLabel.appendChild(ikCheckbox);
   ikLabel.appendChild(document.createTextNode("🦴IK"));
+
+  // ── 整人移动（契约 2：默认关闭；ON 时拖普通关节平移该角色全部关节）──
+  const wholeBodyLabel = document.createElement("label");
+  wholeBodyLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const wholeBodyCheckbox = document.createElement("input");
+  wholeBodyCheckbox.type = "checkbox";
+  wholeBodyCheckbox.id = "wholeBodyCheckbox";
+  wholeBodyCheckbox.checked = false;  // 默认关闭
+  wholeBodyCheckbox.style.cssText = "accent-color:#2f9e63;";
+  window.__ds_moveWholeBody = false;
+  wholeBodyCheckbox.addEventListener("change", () => {
+    window.__ds_moveWholeBody = wholeBodyCheckbox.checked;
+    showToast(wholeBodyCheckbox.checked ? "🧍整人移动：拖任一关节平移整个人" : "🧍整人移动已关闭", false);
+  });
+  wholeBodyLabel.appendChild(wholeBodyCheckbox);
+  wholeBodyLabel.appendChild(document.createTextNode("🧍整人移动"));
 
   // ── GLB 3D角色切换 ──
   const glbBtn = document.createElement("button");
@@ -617,6 +680,7 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", wireLabel);
   afterBtn.insertAdjacentElement("afterend", lockLabel);
   afterBtn.insertAdjacentElement("afterend", ikLabel);
+  afterBtn.insertAdjacentElement("afterend", wholeBodyLabel);
   afterBtn.insertAdjacentElement("afterend", glbBtn);
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
@@ -791,9 +855,8 @@ function updateStatus() {
 // M2 修复：__ds 应动态获取活动角色数据，而非缓存初始引用
 const _dsRef = {
   get joints() {
-    const api = window.DS_FigureAPI;
-    const ch = api ? api.getActiveCharacter() : null;
-    return ch ? ch.jointSpheres : [];
+    // 契约 4：跟随活动角色；无 FigureAPI / 无活动角色时回退 M1 火柴人（闭包 joints = m1Joints）
+    return window.DS_FigureAPI?.getActiveCharacter()?.jointSpheres || joints;
   },
   get bones() {
     const api = window.DS_FigureAPI;

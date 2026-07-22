@@ -191,8 +191,34 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
 
   if (!cameraRef) return;
 
-  // 火柴人（当前活动角色）
-  drawStickFigure(joints, cameraRef, w, h, fkMode);
+  // 火柴人：多角色遍历（无 DS_FigureAPI 时 fallback 画传入的 joints）
+  const api = window.DS_FigureAPI;
+  let chars = [];
+  if (api) {
+    try {
+      const all = api.getAllCharacters();
+      if (all && typeof all.forEach === "function") all.forEach((ch) => chars.push(ch));
+    } catch (e) { /* ignore */ }
+  }
+  const active = api ? api.getActiveCharacter() : null;
+  if (chars.length) {
+    // 非活动角色先画，活动角色最后画（压在最上层）
+    chars.sort((a, b) => (a === active ? 1 : 0) - (b === active ? 1 : 0));
+    for (const ch of chars) {
+      if (!ch || !ch.jointSpheres) continue;
+      const isActive = !!active && ch === active;
+      // char.color 可能是 CSS 字符串（CHARACTER_COLORS）或十六进制数字，两种都兼容
+      const cssColor = typeof ch.color === "string" ? ch.color
+        : "#" + (ch.color ?? 0xffffff).toString(16).padStart(6, "0");
+      drawStickFigure(ch.jointSpheres, cameraRef, w, h, fkMode, {
+        color: cssColor,
+        isActive,
+        charId: String(ch.id),
+      });
+    }
+  } else {
+    drawStickFigure(joints, cameraRef, w, h, fkMode);
+  }
 
   // IK 模式：把 IK target/pole 也投影画出来（否则 2D 里完全点不到）
   if (fkMode) drawIKTargets(cameraRef, w, h);
@@ -222,8 +248,13 @@ function drawGrid(w, h) {
   }
 }
 
-function drawStickFigure(joints, cameraRef, w, h, ikMode) {
+// opts: { color, isActive, charId } — 多人模式着色/激活标记/拾取归属；缺省走旧彩虹单角色路径
+function drawStickFigure(joints, cameraRef, w, h, ikMode, opts) {
   if (!joints || joints.length < 18) return;
+  opts = opts || {};
+  const charColor = opts.color || null;
+  const isActiveChar = !!opts.isActive;
+  const charId = opts.charId != null ? opts.charId : null;
 
   const selectedJoint = window.__ds_selectedJoint || null;
   const hoverJoint = window.__ds_hoverJoint || null;
@@ -254,9 +285,11 @@ function drawStickFigure(joints, cameraRef, w, h, ikMode) {
   // IK 模式下关节球不可拾取（由 drawIKTargets 的 target/pole 接管）
   if (!ikMode) {
     screenPos.forEach((p, i) => {
-      window.__ds_jointScreen.push({ x: p.x, y: p.y, behind: p.behind, obj: joints[i] });
+      window.__ds_jointScreen.push({ x: p.x, y: p.y, behind: p.behind, obj: joints[i], charId });
     });
   }
+
+  const jointColor = (i) => charColor || colors[i % colors.length];
 
   // 画肢
   limbSeq.forEach(([a,b], i) => {
@@ -265,8 +298,8 @@ function drawStickFigure(joints, cameraRef, w, h, ikMode) {
     ctx2d.beginPath();
     ctx2d.moveTo(pa.x, pa.y);
     ctx2d.lineTo(pb.x, pb.y);
-    ctx2d.strokeStyle = colors[i % colors.length];
-    ctx2d.lineWidth = 3;
+    ctx2d.strokeStyle = jointColor(i);
+    ctx2d.lineWidth = charColor ? (isActiveChar ? 4 : 2.5) : 3;
     ctx2d.stroke();
   });
 
@@ -275,13 +308,14 @@ function drawStickFigure(joints, cameraRef, w, h, ikMode) {
     if (p.behind) return;
     const isSel = joints[i] === selectedJoint;
     const isHover = joints[i] === hoverJoint;
-    const r = ikMode ? 3 : (isSel ? 8 : isHover ? 7 : 5);
+    // hover/selected 高亮优先于活动角色标记
+    const r = ikMode ? 3 : (isSel ? 8 : isHover ? 7 : (charColor ? (isActiveChar ? 6 : 5) : 5));
     ctx2d.beginPath();
     ctx2d.arc(p.x, p.y, r, 0, Math.PI * 2);
-    ctx2d.fillStyle = ikMode ? "#888899" : colors[i % colors.length];
+    ctx2d.fillStyle = ikMode ? "#888899" : jointColor(i);
     ctx2d.fill();
-    ctx2d.strokeStyle = isSel ? "#ffffff" : isHover ? "#ffff88" : "#000";
-    ctx2d.lineWidth = isSel || isHover ? 2 : 1;
+    ctx2d.strokeStyle = isSel ? "#ffffff" : isHover ? "#ffff88" : (isActiveChar && !ikMode ? "#ffffff" : "#000");
+    ctx2d.lineWidth = isSel || isHover ? 2 : (isActiveChar && !ikMode ? 2 : 1);
     ctx2d.stroke();
   });
 }
@@ -294,19 +328,20 @@ function drawIKTargets(cameraRef, w, h) {
 
   const api = window.DS_FigureAPI;
   const char = api ? api.getActiveCharacter() : null;
+  const activeCharId = char ? String(char.id) : null;
   if (char) {
     for (const state of Object.values(char.ikState)) {
-      list.push({ obj: state.target, kind: "target" }, { obj: state.pole, kind: "pole" });
+      list.push({ obj: state.target, kind: "target", charId: activeCharId }, { obj: state.pole, kind: "pole", charId: activeCharId });
     }
   }
   if (window.__ds?.glbData?.ikTargets) {
     for (const t of Object.values(window.__ds.glbData.ikTargets)) {
-      list.push({ obj: t.target, kind: "target" }, { obj: t.pole, kind: "pole" });
+      list.push({ obj: t.target, kind: "target", charId: null }, { obj: t.pole, kind: "pole", charId: null });
     }
   }
 
   const _v = new THREE.Vector3();
-  for (const { obj, kind } of list) {
+  for (const { obj, kind, charId } of list) {
     if (!obj) continue;
     // IK 球可能挂在有变换的父级下，必须用世界坐标投影
     obj.getWorldPosition(_v);
@@ -314,7 +349,7 @@ function drawIKTargets(cameraRef, w, h) {
     const behind = _v.z > 1;
     const sx = (_v.x + 1) / 2 * w;
     const sy = (1 - _v.y) / 2 * h;
-    window.__ds_jointScreen.push({ x: sx, y: sy, behind, obj });
+    window.__ds_jointScreen.push({ x: sx, y: sy, behind, obj, charId });
     if (behind) continue;
     const isSel = obj === selectedJoint;
     const isHover = obj === hoverJoint;

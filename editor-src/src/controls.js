@@ -27,6 +27,8 @@ let selected = null;
 let altHeld = false;
 let dragInitial = null;
 let dragJointIdx = -1;
+/** 契约 3：被拖角色（beginDrag 时确定，endDrag 清空）；null 时回退 window.__ds.joints */
+let dragChar = null;
 let boneLockEnabled = true;
 
 /** 运行时锁映射：id → true（角色 ID 或 prop ID，用于对象创建前的锁定标记） */
@@ -114,7 +116,44 @@ window.addEventListener("blur", () => { altHeld = false; });
 /* ==================== 拖动事件：子树联动 + 骨长锁定 ==================== */
 
 function jointsSnapshot() {
-  return window.__ds.joints.map((j) => [j.position.x, j.position.y, j.position.z]);
+  const joints = (dragChar && dragChar.jointSpheres) || window.__ds.joints;
+  return joints.map((j) => [j.position.x, j.position.y, j.position.z]);
+}
+
+/**
+ * 契约 3：根据被拖对象确定所属角色
+ * - IK target/pole 球：userData.characterId
+ * - 普通关节球：查拾取缓存 __ds_jointScreen 的 charId
+ * - 兜底：当前活动角色
+ */
+function _resolveDragChar(obj) {
+  const api = window.DS_FigureAPI;
+  if (!api || !obj) return null;
+  let charId = obj.userData?.characterId || null;
+  if (!charId) {
+    const screen = window.__ds_jointScreen;
+    if (screen && screen.length) {
+      for (const s of screen) {
+        if (s.obj === obj) { charId = s.charId; break; }
+      }
+    }
+  }
+  if (charId && api.getAllCharacters) {
+    const ch = api.getAllCharacters().get(charId);
+    if (ch) return ch;
+  }
+  return api.getActiveCharacter ? api.getActiveCharacter() : null;
+}
+
+/** 契约 3：pointerdown 命中后自动激活对象所属角色 */
+function _activateCharOfObj(obj) {
+  const api = window.DS_FigureAPI;
+  if (!api || !api.setActive) return;
+  const ch = _resolveDragChar(obj);
+  if (ch && ch.id && ch.id !== api.getActiveCharacter()?.id) {
+    api.setActive(ch.id);
+    updateCharPanelIfExists();
+  }
 }
 
 function onDragChanged(e) {
@@ -137,6 +176,9 @@ function onDragChanged(e) {
       pushUndo(window.__ds.joints);
     }
 
+    // 契约 3：确定被拖角色
+    dragChar = _resolveDragChar(selected);
+
     // 关节拖拽初始化（IK targets 不参与子树拖动/骨长锁定）
     if (selected && !selected.userData.ikType) {
       dragInitial = jointsSnapshot();
@@ -146,6 +188,7 @@ function onDragChanged(e) {
     // 拖动结束
     dragInitial = null;
     dragJointIdx = -1;
+    dragChar = null;
     updateOverlay();
   }
 }
@@ -161,7 +204,7 @@ function onObjectChange() {
 function applyDragConstraints() {
   if (!selected || !dragInitial || dragJointIdx < 0) return;
 
-  const joints = window.__ds.joints;
+  const joints = (dragChar && dragChar.jointSpheres) || window.__ds.joints;
   const idx = dragJointIdx;
 
   // 如果是 IK target 球，由 figure.js update 循环处理，这里不干预
@@ -201,7 +244,7 @@ function collectDescendants(idx) {
 }
 
 function applyBoneLock(rootIdx) {
-  const joints = window.__ds.joints;
+  const joints = (dragChar && dragChar.jointSpheres) || window.__ds.joints;
   const queue = [rootIdx];
   while (queue.length) {
     const idx = queue.shift();
@@ -321,6 +364,8 @@ export function setupPointerEvents(domElement) {
   function beginDrag(e, obj) {
     const cam = window.__ds.camera;
     dragObj = obj;
+    // 契约 3：确定被拖角色（IK 球取 userData.characterId，关节球取拾取缓存 charId）
+    dragChar = _resolveDragChar(obj);
     orbit.enabled = false;
 
     // 拖拽平面：过对象世界位置，法线 = 相机视线方向（屏幕平行面）
@@ -368,6 +413,23 @@ export function setupPointerEvents(domElement) {
       dragObj.parent.worldToLocal(_hit);
     }
     dragObj.position.copy(_hit);
+    // 契约 2：整人移动 — 开关 ON 且拖普通关节（非 IK 球）时，
+    // delta 平移到该角色全部 18 关节，跳过子树联动 + 骨长锁定
+    if (window.__ds_moveWholeBody && !dragObj.userData.ikType && dragChar && dragInitial && dragJointIdx >= 0) {
+      const dx = dragObj.position.x - dragInitial[dragJointIdx][0];
+      const dy = dragObj.position.y - dragInitial[dragJointIdx][1];
+      const dz = dragObj.position.z - dragInitial[dragJointIdx][2];
+      const joints = dragChar.jointSpheres;
+      const n = Math.min(joints.length, dragInitial.length);
+      for (let i = 0; i < n; i++) {
+        joints[i].position.set(
+          dragInitial[i][0] + dx,
+          dragInitial[i][1] + dy,
+          dragInitial[i][2] + dz
+        );
+      }
+      return;
+    }
     // 子树联动 + 骨长锁定（IK 球内部自动跳过）
     applyDragConstraints();
   }
@@ -377,6 +439,7 @@ export function setupPointerEvents(domElement) {
     dragObj = null;
     dragInitial = null;
     dragJointIdx = -1;
+    dragChar = null;  // 契约 3：拖拽结束清空被拖角色
     orbit.enabled = true;
     updateOverlay();
   }
@@ -389,6 +452,8 @@ export function setupPointerEvents(domElement) {
     const obj = pickAt(e);
     if (!obj) return;
     if (_isObjectLocked(obj)) return;
+    // 契约 3：命中后自动激活所属角色（顺带刷新角色面板高亮）
+    _activateCharOfObj(obj);
     selectJoint(obj);
     beginDrag(e, obj);
   });

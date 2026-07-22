@@ -6,7 +6,7 @@
  */
 import * as THREE from "three";
 import {
-  T_POSE, LIMB_SEQ, JOINT_COLOR, JOINT_EN,
+  T_POSE, LIMB_SEQ, JOINT_COLOR, JOINT_EN, JOINT_PARENT,
   IK_CHAINS, CHARACTER_COLORS,
   RIGHT_JOINTS, LEFT_JOINTS,
 } from "./constants.js";
@@ -14,6 +14,9 @@ import { createBoneHierarchy, solveCCDIK, getBoneWorldPos, updateBoneWorldMatrix
 
 // ===================== 模块级状态 =====================
 let charManager = null;
+
+/** 契约5：角色数量上限（char-panel.js 也 import 此常量用于按钮置灰） */
+export const MAX_CHARACTERS = 8;
 
 const _va = new THREE.Vector3();
 const _vb = new THREE.Vector3();
@@ -51,6 +54,13 @@ export class CharacterManager {
     if (this.characters.has(id)) {
       console.warn(`[CharacterManager] 角色 ${id} 已存在`);
       return this.characters.get(id);
+    }
+
+    // 契约5：8 人上限。超限返回 null —— 调用方必须判空！
+    if (this.characters.size >= MAX_CHARACTERS) {
+      console.warn(`[CharacterManager] 已达角色上限（${MAX_CHARACTERS}），无法创建角色 ${id}`);
+      window.__ds?.showToast?.("最多 8 人");
+      return null;
     }
 
     const charColor = color || CHARACTER_COLORS[this._colorIdx % CHARACTER_COLORS.length];
@@ -156,7 +166,55 @@ export class CharacterManager {
     // 初始同步关节球位置
     this._syncSpheresFromBones(character);
 
+    // 契约5：新人错位出生（避免所有角色重叠在原点）
+    this._applySpawnOffset(character);
+
     return character;
+  }
+
+  /**
+   * 契约5：新人错位出生。
+   *
+   * 槽位规则（m = 出生槽位，0-based，记录在 char.spawnSlot）：
+   *   - 第一个角色（主角）不分配槽位、不偏移，保持在原点；
+   *   - 后续角色取当前最小空闲槽位 m（删人后再加人会复用空槽，避免重叠）：
+   *       offsetX = (m % 4) * 1.4 + 1.4   —— 从主角右侧 1.4m 起排，每排 4 人，间隔 1.4m
+   *       offsetZ = m >= 4 ? 1.8 : 0      —— 第二排整体后退 1.8m
+   *
+   * 偏移施加方式（保持骨骼/关节球/IK 三者一致）：
+   *   1. 平移 rootBone —— 整副骨架带上偏移；
+   *   2. 重新 _syncSpheresFromBones —— 18 个关节球同步到偏移后的世界坐标；
+   *   3. ikState 每个 chain 的 target 和 pole 手动加同样偏移
+   *      （它们挂在独立的 ikTargetsGroup 下，不随骨架移动）。
+   */
+  _applySpawnOffset(char) {
+    // 第一个角色（主角）：保持原点
+    if (this.characters.size <= 1) return;
+
+    // 找最小空闲槽位（其他角色已占用的 spawnSlot 跳过）
+    const usedSlots = new Set();
+    for (const c of this.characters.values()) {
+      if (c !== char && Number.isInteger(c.spawnSlot)) usedSlots.add(c.spawnSlot);
+    }
+    let m = 0;
+    while (usedSlots.has(m) && m < MAX_CHARACTERS - 1) m++;
+    char.spawnSlot = m;
+
+    const offsetX = (m % 4) * 1.4 + 1.4;
+    const offsetZ = m >= 4 ? 1.8 : 0;
+
+    // 1+2. 平移根骨骼并重新同步关节球（getWorldPosition 会自动更新矩阵）
+    char.rootBone.position.x += offsetX;
+    char.rootBone.position.z += offsetZ;
+    this._syncSpheresFromBones(char);
+
+    // 3. IK target/pole 在 ikTargetsGroup（无变换），直接加世界偏移
+    for (const state of Object.values(char.ikState)) {
+      state.target.position.x += offsetX;
+      state.target.position.z += offsetZ;
+      state.pole.position.x += offsetX;
+      state.pole.position.z += offsetZ;
+    }
   }
 
   /** 创建默认角色 */
@@ -198,6 +256,8 @@ export class CharacterManager {
     });
 
     this.characters.delete(id);
+    // 释放出生槽位（契约5），供后续新建角色复用
+    char.spawnSlot = undefined;
 
     // 如果删除的是活动角色，切换到下一个
     if (this.activeCharacterId === id) {
