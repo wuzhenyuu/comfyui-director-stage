@@ -186,10 +186,16 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
   // 网格
   drawGrid(w, h);
 
+  // 每帧重置屏幕拾取缓存（pointerdown 的屏幕空间拾取依赖它）
+  window.__ds_jointScreen = [];
+
   if (!cameraRef) return;
 
   // 火柴人（当前活动角色）
-  drawStickFigure(joints, cameraRef, w, h);
+  drawStickFigure(joints, cameraRef, w, h, fkMode);
+
+  // IK 模式：把 IK target/pole 也投影画出来（否则 2D 里完全点不到）
+  if (fkMode) drawIKTargets(cameraRef, w, h);
 
   // 原点信标
   const beaconPos = new THREE.Vector3(0, 1, 0);
@@ -216,8 +222,11 @@ function drawGrid(w, h) {
   }
 }
 
-function drawStickFigure(joints, cameraRef, w, h) {
+function drawStickFigure(joints, cameraRef, w, h, ikMode) {
   if (!joints || joints.length < 18) return;
+
+  const selectedJoint = window.__ds_selectedJoint || null;
+  const hoverJoint = window.__ds_hoverJoint || null;
 
   // COCO limbSeq
   const limbSeq = [
@@ -231,7 +240,8 @@ function drawStickFigure(joints, cameraRef, w, h) {
   ];
 
   const screenPos = joints.map(j => {
-    const v = new THREE.Vector3(j.position.x, j.position.y, j.position.z);
+    const v = new THREE.Vector3();
+    j.getWorldPosition(v); // 与拾取/射线统一用世界坐标（多角色父级变换下不会错位）
     v.project(cameraRef);
     return {
       x: (v.x + 1) / 2 * w,
@@ -239,6 +249,14 @@ function drawStickFigure(joints, cameraRef, w, h) {
       behind: v.z > 1, // 相机背后
     };
   });
+
+  // 缓存屏幕拾取坐标（视觉=拾取，根治关节点选不中）
+  // IK 模式下关节球不可拾取（由 drawIKTargets 的 target/pole 接管）
+  if (!ikMode) {
+    screenPos.forEach((p, i) => {
+      window.__ds_jointScreen.push({ x: p.x, y: p.y, behind: p.behind, obj: joints[i] });
+    });
+  }
 
   // 画肢
   limbSeq.forEach(([a,b], i) => {
@@ -252,17 +270,69 @@ function drawStickFigure(joints, cameraRef, w, h) {
     ctx2d.stroke();
   });
 
-  // 画关节
+  // 画关节（IK 模式下画小灰点仅作视觉参考，不参与拾取）
   screenPos.forEach((p, i) => {
     if (p.behind) return;
+    const isSel = joints[i] === selectedJoint;
+    const isHover = joints[i] === hoverJoint;
+    const r = ikMode ? 3 : (isSel ? 8 : isHover ? 7 : 5);
     ctx2d.beginPath();
-    ctx2d.arc(p.x, p.y, 5, 0, Math.PI * 2);
-    ctx2d.fillStyle = colors[i % colors.length];
+    ctx2d.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx2d.fillStyle = ikMode ? "#888899" : colors[i % colors.length];
     ctx2d.fill();
-    ctx2d.strokeStyle = "#000";
-    ctx2d.lineWidth = 1;
+    ctx2d.strokeStyle = isSel ? "#ffffff" : isHover ? "#ffff88" : "#000";
+    ctx2d.lineWidth = isSel || isHover ? 2 : 1;
     ctx2d.stroke();
   });
+}
+
+/** IK 模式：投影绘制 target（青色大圈）/ pole（黄色小点），并缓存屏幕拾取坐标 */
+function drawIKTargets(cameraRef, w, h) {
+  const selectedJoint = window.__ds_selectedJoint || null;
+  const hoverJoint = window.__ds_hoverJoint || null;
+  const list = [];
+
+  const api = window.DS_FigureAPI;
+  const char = api ? api.getActiveCharacter() : null;
+  if (char) {
+    for (const state of Object.values(char.ikState)) {
+      list.push({ obj: state.target, kind: "target" }, { obj: state.pole, kind: "pole" });
+    }
+  }
+  if (window.__ds?.glbData?.ikTargets) {
+    for (const t of Object.values(window.__ds.glbData.ikTargets)) {
+      list.push({ obj: t.target, kind: "target" }, { obj: t.pole, kind: "pole" });
+    }
+  }
+
+  const _v = new THREE.Vector3();
+  for (const { obj, kind } of list) {
+    if (!obj) continue;
+    // IK 球可能挂在有变换的父级下，必须用世界坐标投影
+    obj.getWorldPosition(_v);
+    _v.project(cameraRef);
+    const behind = _v.z > 1;
+    const sx = (_v.x + 1) / 2 * w;
+    const sy = (1 - _v.y) / 2 * h;
+    window.__ds_jointScreen.push({ x: sx, y: sy, behind, obj });
+    if (behind) continue;
+    const isSel = obj === selectedJoint;
+    const isHover = obj === hoverJoint;
+    const r = kind === "target" ? (isSel ? 12 : isHover ? 11 : 9) : (isSel ? 7 : 6);
+    ctx2d.beginPath();
+    ctx2d.arc(sx, sy, r, 0, Math.PI * 2);
+    if (kind === "target") {
+      ctx2d.strokeStyle = isSel ? "#ffffff" : isHover ? "#ffff88" : "#33e0ff";
+      ctx2d.lineWidth = isSel || isHover ? 3 : 2;
+      ctx2d.stroke();
+    } else {
+      ctx2d.fillStyle = isSel ? "#ffffff" : isHover ? "#ffff88" : "#ffcc33";
+      ctx2d.fill();
+      ctx2d.strokeStyle = "#000";
+      ctx2d.lineWidth = 1;
+      ctx2d.stroke();
+    }
+  }
 }
 
 /** 线框模式切换（2D模式无操作） */

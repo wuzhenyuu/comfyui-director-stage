@@ -75,6 +75,8 @@ export function selectJoint(joint) {
     _restoreJointColor(selected);
   }
   selected = joint;
+  // 2D 视口选中高亮（scene.js 每帧读取）
+  window.__ds_selectedJoint = joint || null;
   if (joint) {
     joint.material.color.setHex(SELECT_COLOR);
     joint.material.emissive?.setHex(SELECT_COLOR);
@@ -286,6 +288,25 @@ export function setupPointerEvents(domElement) {
   const _camDir = new THREE.Vector3();
 
   function pickAt(e) {
+    // 屏幕空间拾取优先：与 2D 绘制同一套投影坐标，视觉=拾取
+    // （根治：3D 小球体在远机位投影过小导致射线打不中）
+    const r = domElement.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      const mx = e.clientX - r.left;
+      const my = e.clientY - r.top;
+      const screen = window.__ds_jointScreen;
+      if (screen && screen.length) {
+        let best = null;
+        let bestD = 14; // 14px 命中半径（绘制点最大 12px，留 2px 余量）
+        for (const s of screen) {
+          if (s.behind || !s.obj) continue;
+          const d = Math.hypot(s.x - mx, s.y - my);
+          if (d < bestD) { bestD = d; best = s.obj; }
+        }
+        if (best) return best;
+      }
+    }
+    // 兜底：3D 射线（未来 3D 渲染模式 / 无屏幕缓存对象）
     const cam = window.__ds?.camera;
     if (!cam) return null;
     ndcFromEvent(e, domElement);
@@ -393,6 +414,8 @@ export function setupPointerEvents(domElement) {
       return;
     }
     const obj = pickAt(e);
+    // hover 高亮（scene.js 每帧读取）
+    window.__ds_hoverJoint = obj || null;
     domElement.style.cursor = obj
       ? (_isObjectLocked(obj) ? "not-allowed" : "pointer")
       : "default";
