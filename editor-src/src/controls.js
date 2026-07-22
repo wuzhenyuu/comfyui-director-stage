@@ -41,10 +41,12 @@ export function createOrbit(camera, domElement) {
   orbit.target.set(0, 1, 0);
   orbit.enableDamping = true;
   orbit.dampingFactor = 0.08;
+  // 左键（空白处）= 旋转视角：避开浏览器鼠标手势（右键拖动=后退/前进）
+  // 左键点在关节/道具上时 beginDrag 会禁用 orbit，拖拽对象优先
   orbit.mouseButtons = {
-    LEFT: null,
+    LEFT: THREE.MOUSE.ROTATE,
     MIDDLE: THREE.MOUSE.PAN,
-    RIGHT: THREE.MOUSE.ROTATE,
+    RIGHT: THREE.MOUSE.PAN,
   };
   orbit.update();
   // 暴露给 cameras.js 的 POV 切换使用

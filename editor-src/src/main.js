@@ -632,13 +632,7 @@ function injectTopbarControls() {
 
   if (!window.DS_FigureAPI) {
     document.getElementById("hint").textContent =
-      "左键选关节拖动 / 右键旋转视角 / 滚轮缩放";
-  }
-
-  // 如果没有 DS_FigureAPI（M1兼容），不显示 IK 提示
-  if (!window.DS_FigureAPI) {
-    document.getElementById("hint").textContent =
-      "左键选关节拖动 / 右键旋转视角 / 滚轮缩放";
+      "左键选关节拖动 / 空白处拖动转视角 / 右键平移 / 滚轮缩放";
   }
 }
 
