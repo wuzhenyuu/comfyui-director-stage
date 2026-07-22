@@ -82,6 +82,10 @@ export class CameraManager {
     const entry = this.cameras.find((c) => c.id === id);
     if (!entry) return false;
     this._activeCameraId = id;
+    // 同步 orbit 到新相机（否则轨道控制还绑在旧相机对象上，转了没反应）
+    if (window.__ds__orbit) this.syncOrbitToActiveCamera(window.__ds__orbit);
+    // 相机 aspect 可能不同，重排 2D 画布信箱
+    if (window.__ds_layoutCanvas) window.__ds_layoutCanvas();
     // 延迟 200ms 自动生成缩略图
     this._scheduleThumbnail();
     return true;

@@ -49,8 +49,9 @@ const sceneSettingsPanelEl = document.getElementById("scene-settings-panel");
 
 /* ========================= 初始化渲染器/场景 ========================= */
 
-const renderer = createRenderer();
-console.log("[3D导演台] renderer 已创建, canvas:", renderer.domElement.width, "x", renderer.domElement.height);
+// 2D Canvas 视口（零 WebGL 依赖）；WebGLRenderer 懒加载仅供导出用
+const viewportCanvas = createRenderer();
+console.log("[3D导演台] 2D canvas 已创建:", viewportCanvas.width, "x", viewportCanvas.height);
 const scene = createScene();
 console.log("[3D导演台] scene 已创建, children:", scene.children.length);
 // 创建后清除诊断标记
@@ -63,10 +64,9 @@ mountRenderer(viewportEl);
 
 const cameraManager = new CameraManager();
 cameraManager.initDefaultCamera(1, 35);
-// 用 CameraManager 的活动相机替换 scene.js 中的默认引用
-cameraManager.cameras[0].camera.position.copy(defaultCamera.position);
-cameraManager.cameras[0].camera.quaternion.copy(defaultCamera.quaternion);
-defaultCamera.copy(cameraManager.cameras[0].camera);
+// 让 0 号相机与 defaultCamera 是【同一对象】：orbit/显示/拾取三者强一致
+cameraManager.cameras[0].camera = defaultCamera;
+cameraManager.cameras[0].pos = defaultCamera.position.toArray();
 
 /* ========================= 火柴人（M1 兼容） ========================= */
 
@@ -79,33 +79,35 @@ updateBones(joints, bones);
 
 /* ========================= PropManager ========================= */
 
-const propManager = new PropManager(scene, defaultCamera, renderer.domElement);
+const propManager = new PropManager(scene, defaultCamera, viewportCanvas);
 
-/* ========================= 交互 ========================= */
+/* ========================= 交互（全部绑定到可见的 2D canvas） ========================= */
 
-let orbit = createOrbit(defaultCamera, renderer.domElement);
-const { tctrl } = createTransform(defaultCamera, renderer.domElement, scene);
+let orbit = createOrbit(defaultCamera, viewportCanvas);
+const { tctrl } = createTransform(defaultCamera, viewportCanvas, scene);
+// 2D 编辑器不使用 3D gizmo 拖拽（由 controls.js 的 2D 屏幕平面拖拽接管），禁用防止干扰
+tctrl.enabled = false;
 // M2: tctrl 会在下方 _dsRef 中通过 window.__ds 暴露给 figure.js
 
 // 注册拖拽回调（必须在 orbit 创建之后）
 propManager.onDragChanged((dragging) => {
   orbit.enabled = !dragging;
 });
-setupPointerEvents(renderer.domElement, joints);
+setupPointerEvents(viewportCanvas, joints);
 setupKeyboardShortcuts(joints, () => {
   updateBones(joints, bones);
   updateStatus();
 });
 
 // Prop picking: click on props in viewport
-renderer.domElement.addEventListener("pointerup", (e) => {
+viewportCanvas.addEventListener("pointerup", (e) => {
   if (e.button !== 0) return;
   if (tctrl.dragging || tctrl.axis) return;
   if (propManager.isDragging()) return;
   // Skip if moving (drag)
   const ndcMouse = new THREE.Vector2(
-    ((e.clientX - renderer.domElement.getBoundingClientRect().left) / renderer.domElement.clientWidth) * 2 - 1,
-    -((e.clientY - renderer.domElement.getBoundingClientRect().top) / renderer.domElement.clientHeight) * 2 + 1
+    ((e.clientX - viewportCanvas.getBoundingClientRect().left) / viewportCanvas.clientWidth) * 2 - 1,
+    -((e.clientY - viewportCanvas.getBoundingClientRect().top) / viewportCanvas.clientHeight) * 2 + 1
   );
   const prop = propManager.pickProp(ndcMouse);
   if (prop) {
@@ -666,7 +668,7 @@ window.addEventListener("resize", () => {
   cameraManager.updateAspect(getExportWH()[0] / getExportWH()[1]);
   cameraSettings.updateOverlay();
 });
-renderer.domElement.addEventListener("pointerup", () => {
+viewportCanvas.addEventListener("pointerup", () => {
   setTimeout(() => cameraSettings.updateOverlay(), 100);
 });
 
@@ -806,7 +808,8 @@ const _dsRef = {
   },
   get figureGroup() { return figureGroup; },
   get scene() { return scene; },
-  get renderer() { return renderer; },
+  get renderer() { return getRenderer(); },  // 懒加载 WebGL，无 WebGL 环境返回 null
+  get camera() { return cameraManager.getActiveCamera()?.camera || defaultCamera; },  // 拾取/投影统一用活动相机
   get cameraManager() { return cameraManager; },
   get propManager() { return propManager; },
   __tctrl: tctrl,      // 模块作用域的 tctrl 引用
@@ -822,7 +825,7 @@ const _dsRef = {
     const pg = grid?.visible, pa = axes?.visible;
     if (grid) grid.visible = false;
     if (axes) axes.visible = false;
-    const cv = renderDepthCanvas(scene, defaultCamera, renderer, w, h, []);
+    const cv = renderDepthCanvas(scene, defaultCamera, getRenderer(), w, h, []);
     if (grid) grid.visible = pg;
     if (axes) axes.visible = pa;
     return cv;
@@ -836,7 +839,7 @@ const _dsRef = {
     const pg = grid?.visible, pa = axes?.visible;
     if (grid) grid.visible = false;
     if (axes) axes.visible = false;
-    const cv = renderNormalCanvas(scene, defaultCamera, renderer, w, h, []);
+    const cv = renderNormalCanvas(scene, defaultCamera, getRenderer(), w, h, []);
     if (grid) grid.visible = pg;
     if (axes) axes.visible = pa;
     return cv;
@@ -1135,6 +1138,8 @@ function solveVRM_IK(data) {
 function renderLoop() {
   // 更新 OrbitControls 的相机（用于关节投影计算）
   orbit.update();
+  // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
+  scene.updateMatrixWorld();
   const ac = cameraManager.getActiveCamera();
   if (ac) {
     ac.pos = ac.camera.position.toArray();
@@ -1148,9 +1153,11 @@ function renderLoop() {
   const camRef = ac ? ac.camera : defaultCamera;
   drawFrame(figureGroup, joints, camRef, window.__ds?.fkMode);
   
-  // 如果有GLB/VRM，同步骨骼
-  if (glbData && glbData.jointMap && glbData.ikTargets) solveGLB_IK(glbData);
-  if (vrmData && vrmData.jointMap && vrmData.ikTargets) solveVRM_IK(vrmData);
+  // 如果有GLB/VRM，同步骨骼（glbData/vrmData 是工具栏函数局部变量，必须走 window.__ds）
+  const _glb = window.__ds?.glbData;
+  if (_glb && _glb.jointMap && _glb.ikTargets) solveGLB_IK(_glb);
+  const _vrm = window.__ds?.vrmData;
+  if (_vrm && _vrm.jointMap && _vrm.ikTargets) solveVRM_IK(_vrm);
   
   requestAnimationFrame(renderLoop);
 }

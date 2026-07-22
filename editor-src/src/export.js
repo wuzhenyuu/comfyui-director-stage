@@ -150,7 +150,14 @@ export async function performBatchExport(opts) {
   } = opts;
 
   const scene = getScene();
-  const renderer = getRenderer();
+  const renderer = getRenderer(); // 懒加载，无 WebGL 环境为 null
+
+  // WebGL 依赖通道守卫：depth/normal/lineart/preview/mask 需要 WebGL
+  const WEBGL_PASSES = ["depth", "normal", "lineart", "preview", "mask"];
+  const needWebGL = [...enabledPasses].some((p) => WEBGL_PASSES.includes(p));
+  if (needWebGL && !renderer) {
+    throw new Error("当前环境 WebGL 不可用，depth/normal/lineart/preview/mask 通道无法导出。请只勾选 openpose 重试。");
+  }
   const hiddenObjects = getHiddenObjects(propManager);
 
   const sceneGz = getSceneGz();
@@ -308,7 +315,10 @@ export async function performBatchExport(opts) {
  */
 export async function performApply(joints, exportW, exportH, sceneGz) {
   const scene = getScene();
-  const renderer = getRenderer();
+  const renderer = getRenderer(); // 懒加载，无 WebGL 环境为 null
+  if (!renderer) {
+    throw new Error("当前环境 WebGL 不可用，无法导出 depth/normal 等 3D 通道。");
+  }
   const cam = getSceneCamera();
   const { grid, axes } = getSceneHelpers();
 
@@ -377,6 +387,7 @@ export function renderLegacyPoseCanvas(joints, w, h) {
 export function renderLegacyDepthCanvas(joints, w, h) {
   const scene = getScene();
   const renderer = getRenderer();
+  if (!renderer) return null; // 无 WebGL：depth 通道不可用
   const cam = getSceneCamera();
   const { grid, axes } = getSceneHelpers();
   const pg = grid.visible, pa = axes.visible;

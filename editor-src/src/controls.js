@@ -78,9 +78,7 @@ export function selectJoint(joint) {
   if (joint) {
     joint.material.color.setHex(SELECT_COLOR);
     joint.material.emissive?.setHex(SELECT_COLOR);
-    tctrl.attach(joint);
-  } else {
-    tctrl.detach();
+    // 2D 编辑器：不 attach TransformControls（gizmo 不可见，拖拽由自定义 2D 拖拽处理）
   }
 }
 
@@ -149,6 +147,14 @@ function onDragChanged(e) {
 }
 
 function onObjectChange() {
+  applyDragConstraints();
+}
+
+/**
+ * 拖拽约束（子树联动 + 骨长锁定）—— TransformControls 与 2D 拖拽共用
+ * 前提：selected 位置已被外部更新，dragInitial/dragJointIdx 已就位
+ */
+function applyDragConstraints() {
   if (!selected || !dragInitial || dragJointIdx < 0) return;
 
   const joints = window.__ds.joints;
@@ -271,51 +277,129 @@ function getPickableObjects() {
 }
 
 export function setupPointerEvents(domElement) {
+  // ─── 2D 拖拽状态 ───
+  let dragObj = null;
+  const dragPlane = new THREE.Plane();
+  const dragOffset = new THREE.Vector3();
+  const _hit = new THREE.Vector3();
+  const _world = new THREE.Vector3();
+  const _camDir = new THREE.Vector3();
+
+  function pickAt(e) {
+    const cam = window.__ds?.camera;
+    if (!cam) return null;
+    ndcFromEvent(e, domElement);
+    raycaster.setFromCamera(pointerNdc, cam);
+    const pickables = getPickableObjects();
+    const hits = raycaster.intersectObjects(pickables, false);
+    return hits.length ? hits[0].object : null;
+  }
+
+  function beginDrag(e, obj) {
+    const cam = window.__ds.camera;
+    dragObj = obj;
+    orbit.enabled = false;
+
+    // 拖拽平面：过对象世界位置，法线 = 相机视线方向（屏幕平行面）
+    obj.getWorldPosition(_world);
+    cam.getWorldDirection(_camDir);
+    dragPlane.setFromNormalAndCoplanarPoint(_camDir, _world);
+
+    // 指针射线与平面交点 → 记录与对象位置的偏移，防止跳变
+    ndcFromEvent(e, domElement);
+    raycaster.setFromCamera(pointerNdc, cam);
+    if (raycaster.ray.intersectPlane(dragPlane, _hit)) {
+      dragOffset.copy(_hit).sub(_world);
+    } else {
+      dragOffset.set(0, 0, 0);
+    }
+
+    // 压 undo 栈（与 onDragChanged 起始逻辑一致）
+    const api = window.DS_FigureAPI;
+    if (api) {
+      pushUndo(null);
+    } else {
+      pushUndo(window.__ds.joints);
+    }
+
+    // 关节拖拽初始化（IK targets 不参与子树拖动/骨长锁定）
+    if (!obj.userData.ikType) {
+      dragInitial = jointsSnapshot();
+      dragJointIdx = obj.userData.index;
+    } else {
+      dragInitial = null;
+      dragJointIdx = -1;
+    }
+  }
+
+  function moveDrag(e) {
+    if (!dragObj) return;
+    const cam = window.__ds?.camera;
+    if (!cam) return;
+    ndcFromEvent(e, domElement);
+    raycaster.setFromCamera(pointerNdc, cam);
+    if (!raycaster.ray.intersectPlane(dragPlane, _hit)) return;
+    _hit.sub(dragOffset);
+    // 世界坐标 → 对象父坐标系
+    if (dragObj.parent) {
+      dragObj.parent.worldToLocal(_hit);
+    }
+    dragObj.position.copy(_hit);
+    // 子树联动 + 骨长锁定（IK 球内部自动跳过）
+    applyDragConstraints();
+  }
+
+  function endDrag() {
+    if (!dragObj) return;
+    dragObj = null;
+    dragInitial = null;
+    dragJointIdx = -1;
+    orbit.enabled = true;
+    updateOverlay();
+  }
+
   domElement.addEventListener("pointerdown", (e) => {
     if (e.button === 0) downXY = [e.clientX, e.clientY];
+    if (e.button !== 0) return;
+    // 道具拖拽优先（PropManager 先注册，命中道具时 isDragging=true）
+    if (window.__ds?.propManager?.isDragging?.()) return;
+    const obj = pickAt(e);
+    if (!obj) return;
+    if (_isObjectLocked(obj)) return;
+    selectJoint(obj);
+    beginDrag(e, obj);
   });
 
   domElement.addEventListener("pointerup", (e) => {
-    if (e.button !== 0 || !downXY) return;
+    if (e.button !== 0) return;
+    const wasDragging = !!dragObj;
+    endDrag();
+    if (!downXY) return;
     const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]) > 5;
     downXY = null;
-    if (moved || tctrl.dragging || tctrl.axis) return;
-    ndcFromEvent(e, domElement);
-    raycaster.setFromCamera(pointerNdc, window.__ds.camera);
-
-    const pickables = getPickableObjects();
-    const hits = raycaster.intersectObjects(pickables, false);
-
-    if (hits.length) {
-      const obj = hits[0].object;
-      // 锁定检查：如果对象或其所属角色被锁定，阻止选中
-      if (_isObjectLocked(obj)) {
-        return; // 不选中锁定对象
-      }
-      if (obj.userData.ikType) {
-        // IK target 或 pole：选中它以便 TransformControls 拖拽
-        selectJoint(obj);
-      } else {
-        selectJoint(obj);
-      }
+    if (moved || wasDragging) return; // 拖拽结束不算点击
+    // 点击（未拖动）：命中选中 / 空白取消选中
+    const obj = pickAt(e);
+    if (obj) {
+      if (!_isObjectLocked(obj)) selectJoint(obj);
     } else {
       selectJoint(null);
     }
   });
 
   domElement.addEventListener("pointermove", (e) => {
-    if (tctrl.dragging) return;
-    ndcFromEvent(e, domElement);
-    raycaster.setFromCamera(pointerNdc, window.__ds.camera);
-    const pickables = getPickableObjects();
-    const hits = raycaster.intersectObjects(pickables, false);
-    if (hits.length) {
-      const obj = hits[0].object;
-      domElement.style.cursor = _isObjectLocked(obj) ? "not-allowed" : "pointer";
-    } else {
-      domElement.style.cursor = "default";
+    if (dragObj) {
+      moveDrag(e);
+      return;
     }
+    const obj = pickAt(e);
+    domElement.style.cursor = obj
+      ? (_isObjectLocked(obj) ? "not-allowed" : "pointer")
+      : "default";
   });
+
+  // 指针离开画布时兜底结束拖拽
+  domElement.addEventListener("pointerleave", endDrag);
 }
 
 /* ==================== Undo/Redo 快捷键 ==================== */

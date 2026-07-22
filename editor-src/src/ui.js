@@ -1,7 +1,7 @@
 /**
  * ui.js — DOM 操作、视口自适应、状态栏、Toast、进度条
  */
-import { getCamera, getRenderer, getCanvasRect } from "./scene.js";
+import { getCamera, peekRenderer, getCanvasRect } from "./scene.js";
 import { updateOverlay } from "./camera-settings.js";
 
 let exportW = 512;
@@ -22,24 +22,29 @@ export function getExportWH() {
  */
 export function applyViewport(viewportElem) {
   viewportEl = viewportElem;
-  const renderer = getRenderer();
-  if (!renderer) return;
+  const renderer = peekRenderer(); // 不强制创建 WebGL
   const cw = viewportEl.clientWidth;
   const ch = viewportEl.clientHeight;
   if (cw <= 0 || ch <= 0) return;
   const aspect = exportW / exportH;
-  let vw = cw;
-  let vh = Math.round(cw / aspect);
-  if (vh > ch) {
-    vh = ch;
-    vw = Math.round(ch * aspect);
-  }
-  renderer.setSize(vw, vh);
+  // 相机 aspect 必须始终更新（2D 投影依赖它，与 renderer 无关）
   const cam = getCamera();
   if (cam) {
-    cam.aspect = exportW / exportH;
+    cam.aspect = aspect;
     cam.updateProjectionMatrix();
   }
+  // WebGL renderer 存在时才需要 setSize（仅影响导出离屏渲染）
+  if (renderer) {
+    let vw = cw;
+    let vh = Math.round(cw / aspect);
+    if (vh > ch) {
+      vh = ch;
+      vw = Math.round(ch * aspect);
+    }
+    renderer.setSize(vw, vh);
+  }
+  // 2D canvas 信箱重排
+  if (window.__ds_layoutCanvas) window.__ds_layoutCanvas();
   updateOverlay();
 }
 
