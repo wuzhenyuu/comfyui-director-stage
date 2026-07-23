@@ -1,20 +1,48 @@
 {
   "models": [
     {
+      "id": "michelle",
+      "name": "Michelle (Mixamo女角色)",
+      "file": "michelle.glb",
+      "type": "character",
+      "description": "Mixamo 标准女性角色，65骨骼含手指脚趾+脊柱分段，3.1MB。适合作为默认3D角色。",
+      "defaultScale": 1.8,
+      "autoGround": true,
+      "bones": 65,
+      "hasFingers": true
+    },
+    {
+      "id": "mixamo-rigged",
+      "name": "Mixamo男性角色",
+      "file": "mixamo-rigged-character.glb",
+      "type": "character",
+      "description": "Mixamo 标准男性角色，58骨骼含手指脚趾+眼睛+下巴，100KB轻量。",
+      "defaultScale": 1.8,
+      "autoGround": true,
+      "bones": 58,
+      "hasFingers": true
+    },
+    {
       "id": "ue-mannequin",
       "name": "UE人体模型 (男)",
       "file": "ue-mannequin-retopology.glb",
-      "description": "Unreal Engine 标准男性人体模型，含完整骨骼，约750KB。来源：Sketchfab (William Luque)，Sketchfab Standard License。",
+      "type": "character",
+      "description": "Unreal Engine 标准男性人体模型，67骨骼含脚趾但无手指关节映射，约720KB。骨骼命名Bip001格式。",
       "defaultScale": 1.8,
-      "autoGround": true
+      "autoGround": true,
+      "bones": 67,
+      "hasFingers": false
     },
     {
       "id": "alicia-solid",
       "name": "Alicia Solid (VRM女角色)",
       "file": "AliciaSolid.vrm",
-      "description": "VRM Consortium 官方示例角色，动漫风格女性，含完整Humanoid骨骼+表情。CC0 协议，约7.9MB。",
+      "type": "character",
+      "description": "VRM Consortium 官方示例角色，动漫风格女性，55 Humanoid骨骼+表情+SpringBone。CC0协议，7.5MB。",
       "defaultScale": 1.7,
-      "autoGround": true
+      "autoGround": true,
+      "bones": 62,
+      "hasFingers": true
     }
   ]
 }
