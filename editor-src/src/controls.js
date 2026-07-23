@@ -335,23 +335,29 @@ function getPickableObjects() {
         if (entry.visible === false) continue;
         if (entry.model && entry.model.visible === false) continue;
         for (const t of Object.values(entry.ikTargets)) {
-          objects.push(t.target, t.pole);
+          if (t && t.target) objects.push(t.target);
+          if (t && t.pole) objects.push(t.pole);
         }
       }
-      return objects;
+      // 过滤 null/undefined 与不可见对象；全部不可见/无 ikTargets 时返回空数组，
+      // 此时 orbit 不受影响仍可旋转视角，pickAt 对空数组安全返回 null
+      return objects.filter((o) => o && o.visible !== false);
     }
     // 旧路径兼容（manager 为空但 glbData/vrmData 存在的极端情况）
     if (externalGlbMode && window.__ds?.glbData?.ikTargets) {
       for (const t of Object.values(window.__ds.glbData.ikTargets)) {
-        objects.push(t.target, t.pole);
+        if (t && t.target) objects.push(t.target);
+        if (t && t.pole) objects.push(t.pole);
       }
     }
     if (externalVrmMode && window.__ds?.vrmData?.ikTargets) {
       for (const t of Object.values(window.__ds.vrmData.ikTargets)) {
-        objects.push(t.target, t.pole);
+        if (t && t.target) objects.push(t.target);
+        if (t && t.pole) objects.push(t.pole);
       }
     }
-    return objects;
+    // 同上：空数组安全返回，orbit 保持可用，pickAt 不会因此抛异常
+    return objects.filter((o) => o && o.visible !== false);
   }
 
   if (char) {
@@ -403,6 +409,9 @@ export function setupPointerEvents(domElement) {
     ndcFromEvent(e, domElement);
     raycaster.setFromCamera(pointerNdc, cam);
     const pickables = getPickableObjects();
+    // 无可拾取对象（如外部角色全部不可见/无 ikTargets）时直接返回 null，
+    // 避免对空数组做射线求交，orbit 交互不受影响
+    if (!pickables.length) return null;
     const hits = raycaster.intersectObjects(pickables, false);
     return hits.length ? hits[0].object : null;
   }

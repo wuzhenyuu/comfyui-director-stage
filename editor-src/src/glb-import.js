@@ -55,7 +55,11 @@ export function createGLBImport(propManager, onToast) {
         loader.load(
           url,
           (result) => resolve(result),
-          undefined,
+          (xhr) => {
+            if (xhr.total > 0) {
+              onToast('导入中 ' + Math.round(xhr.loaded / xhr.total * 100) + '%...', false);
+            }
+          },
           (err) => reject(new Error(`加载失败: ${err.message || err}`))
         );
       });

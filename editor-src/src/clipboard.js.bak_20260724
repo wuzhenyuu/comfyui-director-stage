@@ -8,7 +8,6 @@
  */
 
 import * as THREE from "three";
-import { translateExternalCharacter } from "./external-character-move.js";
 
 /** @type {{ type: 'character'|'prop', data: any } | null} */
 let clipboard = null;
@@ -59,44 +58,6 @@ function copyToClipboard() {
           window.__ds.showToast(`📋 已复制角色「${char.name}」`, false);
         }
         console.log("[剪贴板] 已复制角色", clipboard.data);
-        return;
-      }
-    } else {
-      // 3D-only 路径：DS_FigureAPI 不存在时，从 ExternalCharacterManager 取活动 3D 角色
-      const mgr = window.__ds?.externalCharacters;
-      const entry = mgr?.getActive?.();
-      if (entry && entry.model) {
-        const ikData = {};
-        if (entry.ikTargets) {
-          for (const [chainName, t] of Object.entries(entry.ikTargets)) {
-            ikData[chainName] = {
-              target: t?.target ? t.target.position.toArray() : null,
-              pole: t?.pole ? t.pole.position.toArray() : null,
-            };
-          }
-        }
-
-        clipboard = {
-          type: "character",
-          data: {
-            external: true, // 标记：3D 外部角色拷贝（与 DS_FigureAPI 火柴人路径区分）
-            name: entry.name,
-            url: entry.url,
-            fileName: entry.fileName || null,
-            entryType: entry.type || "glb",
-            transform: {
-              position: entry.model.position.toArray(),
-              quaternion: entry.model.quaternion.toArray(),
-              scale: entry.model.scale.toArray(),
-            },
-            ikTargets: ikData,
-          },
-        };
-
-        if (window.__ds?.showToast) {
-          window.__ds.showToast(`📋 已复制角色「${entry.name}」（3D）`, false);
-        }
-        console.log("[剪贴板] 已复制 3D 角色", clipboard.data);
         return;
       }
     }
@@ -154,11 +115,6 @@ function pasteFromClipboard() {
 /** 粘贴角色 */
 function _pasteCharacter(data) {
   const api = window.DS_FigureAPI;
-  if (data?.external) {
-    // 3D 外部角色拷贝：走 ExternalCharacterManager 异步加载路径
-    _pasteExternalCharacter(data);
-    return;
-  }
   if (!api) {
     console.warn("[剪贴板] DS_FigureAPI 不可用");
     return;
@@ -211,76 +167,6 @@ function _pasteCharacter(data) {
     window.__ds.showToast(`📌 已粘贴角色「${newName}」`, false);
   }
   console.log("[剪贴板] 已粘贴角色", newId, newName);
-}
-
-/**
- * 粘贴 3D 外部角色（GLB/VRM）
- * 流程：addGLB/addVRM 异步加载 → 恢复拷贝时的模型变换 → 恢复 IK target/pole 世界坐标
- *      → translateExternalCharacter 整体平移 +1/+1（模型+IK 同步，并重置脚钉地基准）
- */
-async function _pasteExternalCharacter(data) {
-  const mgr = window.__ds?.externalCharacters;
-  if (!mgr) {
-    console.warn("[剪贴板] ExternalCharacterManager 不可用");
-    return;
-  }
-  if (!data?.url) {
-    console.warn("[剪贴板] 3D 角色拷贝缺少 url，无法粘贴");
-    return;
-  }
-
-  const copyName = `${data.name || "3D角色"}_copy`;
-
-  let entry = null;
-  try {
-    entry = data.entryType === "vrm"
-      ? await mgr.addVRM(data.url, copyName, data.fileName)
-      : await mgr.addGLB(data.url, copyName);
-  } catch (err) {
-    console.error("[剪贴板] 加载 3D 角色失败:", err);
-    if (window.__ds?.showToast) {
-      window.__ds.showToast(`📌 粘贴失败：${err?.message || err}`, false);
-    }
-    return;
-  }
-  if (!entry || !entry.model) {
-    console.warn("[剪贴板] 创建 3D 角色失败（可能已达上限）");
-    if (window.__ds?.showToast) {
-      window.__ds.showToast("📌 粘贴失败：3D角色数量已达上限", false);
-    }
-    return;
-  }
-
-  // 恢复拷贝时的模型变换（覆盖 addGLB/addVRM 的自动错位出生位置）
-  const tf = data.transform;
-  if (tf) {
-    if (Array.isArray(tf.position)) entry.model.position.fromArray(tf.position);
-    if (Array.isArray(tf.quaternion)) entry.model.quaternion.fromArray(tf.quaternion);
-    if (Array.isArray(tf.scale)) entry.model.scale.fromArray(tf.scale);
-    entry.model.updateMatrixWorld(true);
-  }
-
-  // 恢复拷贝时的 IK target/pole 世界坐标
-  if (data.ikTargets && entry.ikTargets) {
-    for (const [chainName, ikPos] of Object.entries(data.ikTargets)) {
-      const t = entry.ikTargets[chainName];
-      if (!t) continue;
-      if (Array.isArray(ikPos?.target) && t.target) t.target.position.fromArray(ikPos.target);
-      if (Array.isArray(ikPos?.pole) && t.pole) t.pole.position.fromArray(ikPos.pole);
-    }
-  }
-
-  // 整体平移偏移 +1m（X/Z）：模型与 IK target/pole 同步移动，并重置脚钉地基准
-  translateExternalCharacter(entry, 1, 0, 1);
-
-  // 补解一次 IK，让骨骼对齐到新 target/pole；并激活新角色
-  entry._ikDirty = true;
-  mgr.setActive?.(entry.id);
-
-  if (window.__ds?.showToast) {
-    window.__ds.showToast(`📌 已粘贴角色「${copyName}」（3D）`, false);
-  }
-  console.log("[剪贴板] 已粘贴 3D 角色", entry.id, copyName);
 }
 
 /** 粘贴道具 */
@@ -407,11 +293,8 @@ window.__ds.copyToClipboard = copyToClipboard;
 window.__ds.pasteFromClipboard = pasteFromClipboard;
 window.__ds.getClipboard = getClipboard;
 
-export { copyToClipboard, pasteFromClipboard, getClipboard };
-
-// ==================== 快捷键注册（文件末尾，确保 DOM 就绪） ====================
-
-function _registerHotkeys() {
+// 注册全局键盘快捷键
+if (typeof document !== "undefined") {
   document.addEventListener("keydown", (e) => {
     // 不在 input/textarea 中时才触发剪贴板快捷键
     const tag = document.activeElement?.tagName?.toLowerCase();
@@ -427,10 +310,4 @@ function _registerHotkeys() {
   });
 }
 
-if (typeof document !== "undefined") {
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", _registerHotkeys, { once: true });
-  } else {
-    _registerHotkeys();
-  }
-}
+export { copyToClipboard, pasteFromClipboard, getClipboard };

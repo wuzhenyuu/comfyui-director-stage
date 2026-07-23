@@ -34,12 +34,98 @@ export function restore(joints, snap) {
 }
 
 /**
+ * 获取 ExternalCharacterManager 轻量快照（3D-only 路径）
+ * 只序列化 transform + ikTarget 世界位置，不重新加载模型
+ * @returns {Object|null} { v:3, chars: { id: { id, type, name, transform, ikTargets } }, activeId }
+ */
+function externalCharSnapshot() {
+  const manager = window.__ds?.externalCharacters;
+  if (!manager || typeof manager.getAll !== "function") return null;
+  const entries = manager.getAll();
+  if (!entries || entries.length === 0) return null;
+
+  const chars = {};
+  for (const entry of entries) {
+    if (!entry || !entry.id || !entry.model) continue;
+    const transform = {
+      position: entry.model.position.toArray(),
+      quaternion: entry.model.quaternion.toArray(),
+      scale: entry.model.scale.toArray(),
+    };
+    const ikTargets = {};
+    if (entry.ikTargets) {
+      for (const [chainName, t] of Object.entries(entry.ikTargets)) {
+        if (!t) continue;
+        ikTargets[chainName] = {
+          target: t.target ? t.target.position.toArray() : null,
+          pole: t.pole ? t.pole.position.toArray() : null,
+        };
+      }
+    }
+    chars[entry.id] = {
+      id: entry.id,
+      type: entry.type,
+      name: entry.name,
+      transform,
+      ikTargets,
+    };
+  }
+  return {
+    v: 3,
+    chars,
+    activeId: manager.getActive?.()?.id ?? manager.activeCharacterId ?? null,
+  };
+}
+
+/**
+ * 应用 ExternalCharacterManager 快照（3D-only 路径）
+ */
+function externalCharRestore(snap) {
+  if (!snap || snap.v !== 3 || !snap.chars) return;
+  const manager = window.__ds?.externalCharacters;
+  if (!manager || typeof manager.get !== "function") return;
+
+  for (const [id, charData] of Object.entries(snap.chars)) {
+    const entry = manager.get(id);
+    if (!entry || !entry.model) continue;
+
+    // 恢复模型 transform
+    const tr = charData.transform;
+    if (tr) {
+      if (Array.isArray(tr.position)) entry.model.position.fromArray(tr.position);
+      if (Array.isArray(tr.quaternion)) entry.model.quaternion.fromArray(tr.quaternion);
+      if (Array.isArray(tr.scale)) entry.model.scale.fromArray(tr.scale);
+      entry.model.updateMatrixWorld(true);
+    }
+
+    // 恢复 IK targets 世界位置
+    if (charData.ikTargets && entry.ikTargets) {
+      for (const [chainName, pos] of Object.entries(charData.ikTargets)) {
+        const t = entry.ikTargets[chainName];
+        if (!t) continue;
+        if (Array.isArray(pos.target) && t.target) t.target.position.fromArray(pos.target);
+        if (Array.isArray(pos.pole) && t.pole) t.pole.position.fromArray(pos.pole);
+      }
+      entry._ikDirty = true; // 下一帧补解 IK
+    }
+  }
+
+  // 恢复活动角色
+  if (snap.activeId && typeof manager.setActive === "function") {
+    manager.setActive(snap.activeId);
+  }
+}
+
+/**
  * 获取全部角色完整快照（M2 多角色）
  * @returns {Object} { v:2, chars: { id: { joints, ikTargets } }, activeId }
  */
 function multiCharSnapshot() {
   const api = window.DS_FigureAPI;
-  if (!api || !api.getCharacterCount()) return null;
+  if (!api || !api.getCharacterCount()) {
+    // 3D-only：DS_FigureAPI 不存在时走 ExternalCharacterManager 路径
+    return externalCharSnapshot();
+  }
 
   const chars = {};
   const allChars = api.getAllCharacters();
@@ -77,7 +163,13 @@ function multiCharSnapshot() {
  * 应用多角色快照
  */
 function multiCharRestore(snap) {
-  if (!snap || snap.v !== 2 || !snap.chars) return;
+  if (!snap || !snap.chars) return;
+  // 3D-only：v:3 快照走 ExternalCharacterManager 路径
+  if (snap.v === 3) {
+    externalCharRestore(snap);
+    return;
+  }
+  if (snap.v !== 2) return;
   const api = window.DS_FigureAPI;
   if (!api) return;
 
@@ -124,8 +216,8 @@ function multiCharRestore(snap) {
 export function pushUndo(joints) {
   const api = window.DS_FigureAPI;
 
-  if (api) {
-    // M2: 多角色快照
+  // M2 多角色 或 3D-only 外部角色：自动快照
+  if (api || window.__ds?.externalCharacters) {
     const snap = multiCharSnapshot();
     if (snap) {
       undoStack.push(snap);
@@ -154,8 +246,8 @@ export function performUndo(joints) {
 
   const api = window.DS_FigureAPI;
 
-  if (api && snap && snap.v === 2) {
-    // M2: 保存当前状态到 redo
+  if ((api || window.__ds?.externalCharacters) && snap && (snap.v === 2 || snap.v === 3)) {
+    // M2/3D-only: 保存当前状态到 redo
     const cur = multiCharSnapshot();
     if (cur) redoStack.push(cur);
     multiCharRestore(snap);
@@ -192,7 +284,7 @@ export function performRedo(joints) {
 
   const api = window.DS_FigureAPI;
 
-  if (api && snap && snap.v === 2) {
+  if ((api || window.__ds?.externalCharacters) && snap && (snap.v === 2 || snap.v === 3)) {
     const cur = multiCharSnapshot();
     if (cur) undoStack.push(cur);
     multiCharRestore(snap);

@@ -419,10 +419,19 @@ export class PropManager {
           break;
         case "imported":
           // placeholder for GLB — restore minimal box
+          // 原始 GLB 文件可能已不存在，无法重载模型；保留占位 box，
+          // 但把 dataUrl / fileName 标签拼进 name，避免来源信息丢失
           mesh = PrimitiveFactory.createBox(
             item.params.w || 0.3, item.params.h || 1.8, item.params.d || 0.3, 0xaaaaaa
           );
           mesh.name = "imported_" + (item.params.fileName || "unknown");
+          {
+            const srcTag = item.params?.fileName
+              || (item.params?.dataUrl ? "data-url" : null);
+            if (srcTag && !(item.name || "").includes(srcTag)) {
+              item.name = `${item.name || "imported"} [${srcTag}]`;
+            }
+          }
           break;
         default:
           mesh = PrimitiveFactory.createBox(

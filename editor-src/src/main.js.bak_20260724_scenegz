@@ -930,7 +930,7 @@ async function onApply() {
       const result = await performBatchExport({
         cameraManager,
         propManager,
-        get joints() { return getEffectiveJoints(); },
+        get joints() { return _dsRef.joints; },
         getSceneGz: () => sceneGz,
         exportW: ew,
         exportH: eh,
@@ -949,7 +949,7 @@ async function onApply() {
       );
     } else {
       // Single camera, single character: use M1-compatible export
-      await performApply(getEffectiveJoints(), ew, eh, sceneGz, { sceneJSON });
+      await performApply(_dsRef.joints, ew, eh, sceneGz, { sceneJSON });
     }
 
     setStatus("✅ 已应用到节点", statusEl);
@@ -966,58 +966,10 @@ async function onApply() {
   }
 }
 
-/**
- * 3D-only 兜底：DS_FigureAPI 不存在时，从 externalManager 收集所有外部角色的
- * COCO-18 关节世界坐标，包装成 M1 兼容的 { position, userData.index } 对象数组。
- * （export.js 中 extractExternalJoints 的内联简化版，放这里避免循环依赖。）
- * @returns {THREE.Mesh[]} 每个外部角色 18 个关节；无外部角色时返回空数组
- */
-function collectExternalM1Joints() {
-  const out = [];
-  try {
-    const entries = externalManager?.getAll?.() || [];
-    for (const entry of entries) {
-      if (!entry || !entry.jointMap) continue;
-      // 确保骨骼世界矩阵最新（IK/拖拽后导出时 matrixWorld 可能滞后）
-      try { entry.model?.updateMatrixWorld?.(true); } catch { /* 用现有矩阵 */ }
-      for (let i = 0; i < 18; i++) {
-        const bone = entry.jointMap.get?.(i);
-        const v = new THREE.Vector3();
-        if (bone) {
-          try { bone.getWorldPosition(v); } catch { v.set(0, 0, 0); }
-        }
-        const m = new THREE.Mesh();
-        m.position.copy(v);
-        m.userData = { index: i };
-        out.push(m);
-      }
-    }
-  } catch (err) {
-    console.warn("[3D导演台] 收集外部角色关节失败:", err);
-  }
-  return out;
-}
-
-/**
- * 渲染/导出统一取关节：FigureAPI 活动角色 > 外部角色 > M1 火柴人兜底。
- * 确保 3D-only（DS_FigureAPI 不存在）下渲染类通道不会走空数组路径。
- */
-function getEffectiveJoints() {
-  const apiJoints = window.DS_FigureAPI?.getActiveCharacter?.()?.jointSpheres;
-  if (apiJoints && apiJoints.length) return apiJoints;
-  const ext = collectExternalM1Joints();
-  if (ext.length) return ext;
-  return joints; // M1 火柴人兜底（契约 4）
-}
-
-function encodeCurrentSceneGz(focalOverride) {
+function encodeCurrentSceneGz() {
   const manager = window.DS_FigureAPI?.getManager?.();
-  const focal = focalOverride ?? cameraSettings.getFocalLength();
-  if (manager) return encodeSceneGz(manager, focal);
-  // 3D-only：DS_FigureAPI 不存在时，用外部角色的 COCO-18 关节做 M1 兼容编码；
-  // externalManager 也没有角色时，退回原 M1 路径（空关节数组兜底编码）
-  const extJoints = collectExternalM1Joints();
-  return extJoints.length ? encodeSceneGz(extJoints, focal) : encodeSceneGz(_dsRef.joints, focal);
+  const focal = cameraSettings.getFocalLength();
+  return manager ? encodeSceneGz(manager, focal) : encodeSceneGz(_dsRef.joints, focal);
 }
 
 function buildSceneJSON(sceneGz) {
@@ -1133,7 +1085,7 @@ const _dsRef = {
   },
 
   // M1 compat
-  renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(getEffectiveJoints(), defaultCamera, w, h),
+  renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(_dsRef.joints, defaultCamera, w, h),
   renderDepthCanvas: (w, h) => {
     const { grid, axes } = getScene().children.reduce((acc, c) => {
       if (c instanceof THREE.GridHelper) acc.grid = c;
@@ -1163,7 +1115,7 @@ const _dsRef = {
     return cv;
   },
 
-  encodeSceneGz: (fl) => encodeCurrentSceneGz(fl),
+  encodeSceneGz: (fl) => encodeCurrentSceneGz(),
   decodeSceneGz: (b64) => {
     const result = decodeSceneGz(b64);
     if (result) {
@@ -1250,7 +1202,7 @@ const _dsRef = {
       return await performBatchExport({
         cameraManager,
         propManager,
-        get joints() { return getEffectiveJoints(); },
+        get joints() { return _dsRef.joints; },
         getSceneGz: () => encodeCurrentSceneGz(),
         exportW: getExportWH()[0],
         exportH: getExportWH()[1],
