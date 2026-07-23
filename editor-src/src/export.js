@@ -39,10 +39,106 @@ function getHiddenObjects(propManager) {
   const hidden = [grid, axes];
   // Hide prop gizmo
   if (propManager) propManager.setGizmoVisible(false);
+  // P3-1 3D-only：火柴人全部残留（figureGroup + 骨架组 + IK 球组）防御性隐藏，
+  // 保证 depth/normal/preview/mask 绝不混入隐藏火柴人。
+  const ds = typeof window !== "undefined" ? window.__ds : null;
+  if (ds?.figureGroup) hidden.push(ds.figureGroup);
+  const stickMgr = typeof window !== "undefined" ? window.DS_FigureAPI?.getManager?.() : null;
+  if (stickMgr) {
+    if (stickMgr.ikTargetsGroup) hidden.push(stickMgr.ikTargetsGroup);
+    for (const ch of stickMgr.characters?.values?.() || []) {
+      if (ch?.skeletonGroup) hidden.push(ch.skeletonGroup);
+    }
+  }
   return hidden;
 }
 
-function restoreHiddenObjects(propManager) {
+/**
+ * P3-1：是否处于外部 3D角色模式（3D-only 下恒为 true）
+ */
+export function isExternalCharacterMode() {
+  const ds = typeof window !== "undefined" ? window.__ds : null;
+  return !!(ds && (ds.isGLBMode || ds.isVRMMode));
+}
+
+/**
+ * 解析导出角色列表（P1.5b：外部 GLB/VRM 角色优先）
+ *
+ * 策略：
+ * - window.__ds 处于 GLB/VRM 模式且 externalCharacters 非空时，
+ *   使用所有可见外部 entry（group=entry.model，带 external/entry 标记）；
+ * - 否则回退到火柴人路径（opts.characters，来自 getCharacterGroups()）。
+ *
+ * @param {Array<{id:string, group:THREE.Group}>} fallbackCharacters — 火柴人角色
+ * @returns {Array<{id:string, name?:string, group:THREE.Object3D, external:boolean, entry?:object}>}
+ */
+export function resolveExportCharacters(fallbackCharacters = []) {
+  const ds = typeof window !== "undefined" ? window.__ds : null;
+  const mgr = ds?.externalCharacters;
+  // P3-1 3D-only：外部角色模式下只导出 3D角色（即使为 0 个也绝不回退隐藏火柴人）
+  if (isExternalCharacterMode() && mgr && typeof mgr.getAll === "function") {
+    return mgr.getAll()
+      .filter((e) => e && e.model && e.visible !== false)
+      .map((e) => ({
+        id: e.id,
+        name: e.name || e.id,
+        group: e.model,
+        external: true,
+        entry: e,
+      }));
+  }
+  // 兼容回退（仅旧火柴人模式；3D-only 不会走到）
+  if (mgr && typeof mgr.getAll === "function" && mgr.size > 0) {
+    const entries = mgr.getAll().filter((e) => e && e.model && e.visible !== false);
+    if (entries.length > 0) {
+      return entries.map((e) => ({
+        id: e.id,
+        name: e.name || e.id,
+        group: e.model,
+        external: true,
+        entry: e,
+      }));
+    }
+  }
+  return (fallbackCharacters || []).map((ch) => ({ ...ch, external: false }));
+}
+
+const _extJointV = new THREE.Vector3();
+
+/**
+ * 从外部角色 entry 的 jointMap 按 COCO-18 提取关节世界坐标。
+ * 缺关节的索引填零向量（[0,0,0]），保证导出不因个别 GLB 骨骼缺失而中断。
+ *
+ * @param {object} entry — ExternalCharacterManager entry（含 model / jointMap）
+ * @returns {THREE.Vector3[]} 18 个关节的世界坐标
+ */
+export function extractExternalJoints(entry) {
+  const joints = [];
+  try {
+    // 确保骨骼世界矩阵最新（IK/拖拽后导出时 matrixWorld 可能滞后）
+    entry?.model?.updateMatrixWorld?.(true);
+  } catch { /* 忽略，继续用现有矩阵 */ }
+  for (let i = 0; i < 18; i++) {
+    const bone = entry?.jointMap?.get?.(i);
+    if (bone) {
+      try {
+        bone.getWorldPosition(_extJointV);
+        joints.push(_extJointV.clone());
+        continue;
+      } catch { /* 落到零向量 */ }
+    }
+    joints.push(new THREE.Vector3(0, 0, 0));
+  }
+  return joints;
+}
+
+function restoreHiddenObjects(propManager, hiddenObjects) {
+  // 恢复导出前被隐藏的场景辅助对象（grid/axes/火柴人骨架/IK 球组等）
+  if (Array.isArray(hiddenObjects)) {
+    for (const obj of hiddenObjects) {
+      if (obj && obj.visible === false) obj.visible = true;
+    }
+  }
   if (propManager) propManager.setGizmoVisible(true);
 }
 
@@ -146,7 +242,7 @@ export async function performBatchExport(opts) {
     exportH,
     enabledPasses,
     onProgress,
-    characters = [],
+    characters: optsCharacters = [],
   } = opts;
 
   const scene = getScene();
@@ -158,7 +254,14 @@ export async function performBatchExport(opts) {
   if (needWebGL && !renderer) {
     throw new Error("当前环境 WebGL 不可用，depth/normal/lineart/preview/mask 通道无法导出。请只勾选 openpose 重试。");
   }
+  // P1.5b：GLB/VRM 模式下用外部角色替换火柴人角色列表
+  const characters = resolveExportCharacters(optsCharacters);
+
   const hiddenObjects = getHiddenObjects(propManager);
+  // 外部角色的 IK target/pole 球也须隐藏，否则会混入 depth/normal/mask
+  characters.forEach((ch) => {
+    if (ch.external && ch.entry?.ikTargetsGroup) hiddenObjects.push(ch.entry.ikTargetsGroup);
+  });
 
   const sceneGz = getSceneGz();
   const t = Date.now();
@@ -215,11 +318,17 @@ export async function performBatchExport(opts) {
       // ─── OpenPose ───
       if (enabledPasses.has("openpose")) {
         let poseCv;
-        if (characters.length > 0) {
-          // Multi-character openpose
+        // P3-1 3D-only：外部角色模式始终走多角色路径（0 个角色时输出空图，绝不回退火柴人关节）
+        if (characters.length > 0 || isExternalCharacterMode()) {
+          // Multi-character openpose（火柴人 + 外部 GLB/VRM 角色同图输出）
           try {
             const allJoints = [];
             characters.forEach((ch) => {
+              if (ch.external) {
+                // 外部 GLB/VRM 角色：从 jointMap 按 COCO-18 提取世界坐标
+                allJoints.push({ id: ch.id, joints: extractExternalJoints(ch.entry) });
+                return;
+              }
               // Get joints from DS_FigureAPI
               if (window.DS_FigureAPI && window.DS_FigureAPI.getCharacterJoints) {
                 const jointData = window.DS_FigureAPI.getCharacterJoints(ch.id);
@@ -290,7 +399,8 @@ export async function performBatchExport(opts) {
         for (const [charId, maskCv] of Object.entries(masks)) {
           const filename = `director_mask_${charId}_${camEntry.id}_${t}.png`;
           const maskPath = await uploadCanvas(maskCv, filename);
-          manifest.masks.push({ charId, cameraId: camEntry.id, file: maskPath });
+          const chInfo = characters.find((c) => c.id === charId);
+          manifest.masks.push({ charId, name: chInfo?.name || charId, cameraId: camEntry.id, file: maskPath });
           progress();
         }
       }
@@ -304,7 +414,7 @@ export async function performBatchExport(opts) {
     }
 
   } finally {
-    restoreHiddenObjects(propManager);
+    restoreHiddenObjects(propManager, hiddenObjects);
   }
 
   return { manifest, sceneGz };
@@ -313,7 +423,7 @@ export async function performBatchExport(opts) {
 /**
  * M1-style single-camera apply (backward compatible)
  */
-export async function performApply(joints, exportW, exportH, sceneGz) {
+export async function performApply(joints, exportW, exportH, sceneGz, extraPayload = null) {
   const scene = getScene();
   const renderer = getRenderer(); // 懒加载，无 WebGL 环境为 null
   if (!renderer) {
@@ -370,7 +480,14 @@ export async function performApply(joints, exportW, exportH, sceneGz) {
   };
 
   window.parent.postMessage(
-    { type: "exportDone", payload: { manifest, sceneGz } },
+    {
+      type: "exportDone",
+      payload: {
+        manifest,
+        sceneGz,
+        ...(extraPayload || {}),
+      },
+    },
     "*"
   );
   return { manifest, sceneGz };

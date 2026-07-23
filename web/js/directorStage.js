@@ -8,6 +8,25 @@ function findWidget(node, name) {
   return node.widgets.find((w) => w && w.name === name) || null;
 }
 
+/** 查找或创建 widget（兼容旧工作流里尚未出现 scene_json 的节点） */
+function ensureWidget(node, name, defaultValue = "") {
+  let widget = findWidget(node, name);
+  if (!widget && node && typeof node.addWidget === "function") {
+    widget = node.addWidget("text", name, defaultValue);
+  }
+  return widget;
+}
+
+function toWidgetJson(value, fallback = "{}") {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch (err) {
+    return fallback;
+  }
+}
+
 /** 隐藏 widget（不占布局空间） */
 function hideWidget(w) {
   if (!w) return;
@@ -61,6 +80,7 @@ function openEditor(node) {
 
     if (data.type === "ready") {
       const sceneGzWidget = findWidget(node, "scene_gz");
+      const sceneJsonWidget = findWidget(node, "scene_json");
       const widthWidget = findWidget(node, "width");
       const heightWidget = findWidget(node, "height");
       iframe.contentWindow.postMessage(
@@ -68,6 +88,7 @@ function openEditor(node) {
           type: "init",
           payload: {
             sceneGz: (sceneGzWidget && sceneGzWidget.value) || "",
+            sceneJSON: (sceneJsonWidget && sceneJsonWidget.value) || "{}",
             width: widthWidget ? widthWidget.value : undefined,
             height: heightWidget ? heightWidget.value : undefined,
           },
@@ -78,7 +99,11 @@ function openEditor(node) {
       const payload = data.payload || {};
       const sceneGzWidget = findWidget(node, "scene_gz");
       const manifestWidget = findWidget(node, "manifest");
+      const sceneJsonWidget = findWidget(node, "scene_json");
       if (sceneGzWidget) sceneGzWidget.value = payload.sceneGz || "";
+      if (sceneJsonWidget) {
+        sceneJsonWidget.value = toWidgetJson(payload.sceneJSON || payload.sceneJson, "{}");
+      }
       if (manifestWidget) {
         try {
           manifestWidget.value = JSON.stringify(
@@ -117,9 +142,10 @@ app.registerExtension({
 
       this.addWidget("button", "🎬 打开导演台", null, () => openEditor(this));
 
-      // 隐藏序列化用的内部 widget（容错：不存在则跳过）
-      hideWidget(findWidget(this, "scene_gz"));
-      hideWidget(findWidget(this, "manifest"));
+      // 隐藏序列化用的内部 widget（容错：不存在则创建后再隐藏）
+      hideWidget(ensureWidget(this, "scene_gz", ""));
+      hideWidget(ensureWidget(this, "manifest", "{}"));
+      hideWidget(ensureWidget(this, "scene_json", "{}"));
 
       return result;
     };

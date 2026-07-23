@@ -25,6 +25,15 @@ let orbit = null;
 let tctrl = null;
 let selected = null;
 let altHeld = false;
+/** P3-1：3D角色整体移动器（main.js 注入，external-character-move.js 实现） */
+let externalBodyMover = null;
+/** P3-1：身体射线命中点缓存（pointerdown → begin 传参） */
+let _bodyHitPoint = null;
+
+/** 注入 3D角色整体移动器（点身体拖整人；IK 球仍走原有摆姿势路径） */
+export function setExternalBodyMover(mover) {
+  externalBodyMover = mover;
+}
 let dragInitial = null;
 let dragJointIdx = -1;
 /** 契约 3：被拖角色（beginDrag 时确定，endDrag 清空）；null 时回退 window.__ds.joints */
@@ -89,6 +98,8 @@ export function selectJoint(joint) {
 }
 
 function _restoreJointColor(joint) {
+  // 3D-only：IK target/pole 球没有 userData.index，不需要恢复火柴人颜色
+  if (!joint || !joint.material || !joint.material.color) return;
   const idx = joint.userData?.index;
   if (idx !== undefined) {
     if (RIGHT_JOINTS.has(idx)) joint.material.color.setHex(0xff9966);
@@ -147,6 +158,15 @@ function _resolveDragChar(obj) {
 
 /** 契约 3：pointerdown 命中后自动激活对象所属角色 */
 function _activateCharOfObj(obj) {
+  // P1.5：命中外部 3D角色的 IK 球 → 激活对应外部角色
+  const extId = obj?.userData?.externalCharId;
+  if (extId) {
+    const mgr = window.__ds?.externalCharacters;
+    if (mgr && mgr.activeCharacterId !== extId) {
+      mgr.setActive(extId);
+    }
+    return;
+  }
   const api = window.DS_FigureAPI;
   if (!api || !api.setActive) return;
   const ch = _resolveDragChar(obj);
@@ -300,12 +320,38 @@ function getPickableObjects() {
 
   const fkMode = window.__ds?.fkMode;
 
-  // GLB 角色的 IK 目标球
-  if (window.__ds?.glbData?.ikTargets) {
-    const glbTargets = window.__ds.glbData.ikTargets;
-    for (const t of Object.values(glbTargets)) {
-      objects.push(t.target, t.pole);
+  const externalGlbMode = !!window.__ds?.isGLBMode;
+  const externalVrmMode = !!window.__ds?.isVRMMode;
+  const externalMode = externalGlbMode || externalVrmMode;
+
+  // GLB/VRM 外部角色模式下：只拾取所有可见外部角色自己的 IK 目标，
+  // 不再拾取已隐藏火柴人的关节/IK 球，避免“拖到隐形对象”。
+  if (externalMode) {
+    const mgr = window.__ds?.externalCharacters;
+    if (mgr && mgr.characters?.size) {
+      // P1.5：枚举全部外部角色（点谁的 IK 球就激活谁）
+      for (const entry of mgr.characters.values()) {
+        if (!entry.ikTargets) continue;
+        if (entry.visible === false) continue;
+        if (entry.model && entry.model.visible === false) continue;
+        for (const t of Object.values(entry.ikTargets)) {
+          objects.push(t.target, t.pole);
+        }
+      }
+      return objects;
     }
+    // 旧路径兼容（manager 为空但 glbData/vrmData 存在的极端情况）
+    if (externalGlbMode && window.__ds?.glbData?.ikTargets) {
+      for (const t of Object.values(window.__ds.glbData.ikTargets)) {
+        objects.push(t.target, t.pole);
+      }
+    }
+    if (externalVrmMode && window.__ds?.vrmData?.ikTargets) {
+      for (const t of Object.values(window.__ds.vrmData.ikTargets)) {
+        objects.push(t.target, t.pole);
+      }
+    }
+    return objects;
   }
 
   if (char) {
@@ -450,7 +496,38 @@ export function setupPointerEvents(domElement) {
     // 道具拖拽优先（PropManager 先注册，命中道具时 isDragging=true）
     if (window.__ds?.propManager?.isDragging?.()) return;
     const obj = pickAt(e);
-    if (!obj) return;
+    if (!obj) {
+      // P3-1：未命中 IK 球/关节时，尝试命中 3D角色身体 → 整体移动
+      // P3-2：骨骼编辑模式下禁用身体拖拽，让 bone-editor 接管点击事件
+      const isBoneEdit = window.__ds?.boneEditor?.getMode?.() === "bone";
+      if (!isBoneEdit) {
+      const externalMode = !!(window.__ds?.isGLBMode || window.__ds?.isVRMMode);
+      if (externalMode && externalBodyMover) {
+        // 道具命中优先（道具选择/拖拽由 PropManager 接管）
+        let propHit = null;
+        try {
+          const pm = window.__ds?.propManager;
+          if (pm?.pickProp) {
+            ndcFromEvent(e, domElement);
+            propHit = pm.pickProp(pointerNdc);
+          }
+        } catch (_) { /* ignore */ }
+        if (!propHit) {
+          _bodyHitPoint = _bodyHitPoint || new THREE.Vector3();
+          const entry = externalBodyMover.pick(e.clientX, e.clientY, domElement, _bodyHitPoint);
+          if (entry) {
+            const mgr = window.__ds?.externalCharacters;
+            if (mgr && mgr.activeCharacterId !== entry.id) mgr.setActive(entry.id);
+            selectJoint(null);
+            if (externalBodyMover.begin(entry, e.clientX, e.clientY, domElement, _bodyHitPoint)) {
+              orbit.enabled = false;
+            }
+          }
+        }
+      }
+      } // end if (!isBoneEdit)
+      return;
+    }
     if (_isObjectLocked(obj)) return;
     // 契约 3：命中后自动激活所属角色（顺带刷新角色面板高亮）
     _activateCharOfObj(obj);
@@ -460,6 +537,11 @@ export function setupPointerEvents(domElement) {
 
   domElement.addEventListener("pointerup", (e) => {
     if (e.button !== 0) return;
+    // P3-1：结束 3D角色整体拖拽
+    if (externalBodyMover?.dragging) {
+      externalBodyMover.end();
+      orbit.enabled = true;
+    }
     const wasDragging = !!dragObj;
     endDrag();
     if (!downXY) return;
@@ -476,6 +558,11 @@ export function setupPointerEvents(domElement) {
   });
 
   domElement.addEventListener("pointermove", (e) => {
+    // P3-1：3D角色整体拖拽中（Alt = Y 升降）
+    if (externalBodyMover?.dragging) {
+      externalBodyMover.move(e.clientX, e.clientY, domElement, e.altKey);
+      return;
+    }
     if (dragObj) {
       moveDrag(e);
       return;
@@ -483,13 +570,28 @@ export function setupPointerEvents(domElement) {
     const obj = pickAt(e);
     // hover 高亮（scene.js 每帧读取）
     window.__ds_hoverJoint = obj || null;
-    domElement.style.cursor = obj
-      ? (_isObjectLocked(obj) ? "not-allowed" : "pointer")
-      : "default";
+    if (obj) {
+      domElement.style.cursor = _isObjectLocked(obj) ? "not-allowed" : "pointer";
+      return;
+    }
+    // P3-1：悬停 3D角色身体提示可整体移动
+    const externalMode = !!(window.__ds?.isGLBMode || window.__ds?.isVRMMode);
+    if (externalMode && externalBodyMover) {
+      const entry = externalBodyMover.pick(e.clientX, e.clientY, domElement);
+      domElement.style.cursor = entry ? "move" : "default";
+      return;
+    }
+    domElement.style.cursor = "default";
   });
 
   // 指针离开画布时兜底结束拖拽
-  domElement.addEventListener("pointerleave", endDrag);
+  domElement.addEventListener("pointerleave", () => {
+    if (externalBodyMover?.dragging) {
+      externalBodyMover.end();
+      orbit.enabled = true;
+    }
+    endDrag();
+  });
 }
 
 /* ==================== Undo/Redo 快捷键 ==================== */
@@ -498,10 +600,21 @@ export function setupKeyboardShortcuts(onStateChange) {
   window.addEventListener("keydown", (e) => {
     // 角色切换快捷键 1-9（非编辑状态）
     if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key >= "1" && e.key <= "9") {
+      const idx = parseInt(e.key) - 1;
+      // P3-1 3D-only：优先切换外部 3D角色
+      const extMgr = window.__ds?.externalCharacters;
+      if (extMgr && extMgr.size > 0) {
+        const entries = extMgr.getAll();
+        if (idx < entries.length) {
+          e.preventDefault();
+          extMgr.setActive(entries[idx].id);
+          if (selected) selectJoint(null);
+        }
+        return;
+      }
       const api = window.DS_FigureAPI;
       if (!api) return;
       const chars = Array.from(api.getAllCharacters().values());
-      const idx = parseInt(e.key) - 1;
       if (idx < chars.length) {
         e.preventDefault();
         const targetId = chars[idx].id;

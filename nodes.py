@@ -178,6 +178,7 @@ class DirectorStage:
             "optional": {
                 "scene_gz": ("STRING", {"default": ""}),
                 "manifest": ("STRING", {"default": "{}"}),
+                "scene_json": ("STRING", {"default": "{}"}),
             },
         }
 
@@ -190,7 +191,7 @@ class DirectorStage:
 
     # ------------------------------------------------------------------ run
 
-    def run(self, width, height, scene_gz="", manifest="{}"):
+    def run(self, width, height, scene_gz="", manifest="{}", scene_json="{}"):
         data = _parse_manifest(manifest)
 
         # ---- M2 格式：cameras 数组存在，取第一个 camera ----

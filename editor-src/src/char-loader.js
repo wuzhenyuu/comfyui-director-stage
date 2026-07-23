@@ -13,21 +13,23 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
  */
 const BONE_PATTERNS = [
   // [COCO index, regex patterns]
-  [0,  [/head/i, /mixamorig:Head/i]],                              // Nose
-  [1,  [/neck/i, /mixamorig:Neck/i]],                             // Neck
-  [2,  [/rightshoulder/i, /RightShoulder/i]],                     // RShoulder
-  [3,  [/rightarm/i, /rightforearm/i, /RightArm/i]],              // RElbow (upper arm)
-  [4,  [/righthand/i, /RightHand/i]],                             // RWrist
-  [5,  [/leftshoulder/i, /LeftShoulder/i]],                       // LShoulder
-  [6,  [/leftarm/i, /leftforearm/i, /LeftArm/i]],                 // LElbow
-  [7,  [/lefthand/i, /LeftHand/i]],                               // LWrist
-  [8,  [/rightupleg/i, /RightUpLeg/i]],                           // RHip
-  [9,  [/rightleg/i, /RightLeg/i]],                               // RKnee
-  [10, [/rightfoot/i, /RightFoot/i]],                             // RAnkle
-  [11, [/leftupleg/i, /LeftUpLeg/i]],                             // LHip
-  [12, [/leftleg/i, /LeftLeg/i]],                                 // LKnee
-  [13, [/leftfoot/i, /LeftFoot/i]],                               // LAnkle
-  [14, [/head/i, /mixamorig:Head/i]],                             // REye
+  // 注意：14(Nose)/15(Neck) 等头部关节共享 head 骨骼在一般 GLB 中是预期行为；
+  // Nose 用 nose/nosetip 优先匹配，兜底到 head；Eyes/Ears 始终走 head。
+  [0,  [/nose/i, /nosetip/i, /mixamorig[:]?Nose(?:Tip)?\b/i, /head/i, /mixamorig:Head/i]],
+  [1,  [/neck/i, /mixamorig:Neck/i, /mixamorigNeck\b/i]],
+  [2,  [/rightshoulder/i, /RightShoulder/i, /mixamorig[:]?RightArm\b/i, /RightArm\b/i, /right[_\s]*upper[_\s]*arm/i, /R[_\s]*UpperArm/i, /upperarm[_\s]*r\b/i]],
+  [3,  [/rightforearm/i, /right[_\s]*(forearm|elbow)/i, /mixamorig[:]?RightForeArm\b/i, /RightForeArm/i, /Forearm[_\s]*[rR]\b/i, /[rR][_\s]*Forearm/i]],
+  [4,  [/righthand/i, /RightHand/i, /mixamorig[:]?RightHand\b/i, /R[_\s]*Hand/i, /right[_\s]*hand/i]],
+  [5,  [/leftshoulder/i, /LeftShoulder/i, /mixamorig[:]?LeftArm\b/i, /LeftArm\b/i, /left[_\s]*upper[_\s]*arm/i, /L[_\s]*UpperArm/i, /upperarm[_\s]*l\b/i]],
+  [6,  [/leftforearm/i, /left[_\s]*(forearm|elbow)/i, /mixamorig[:]?LeftForeArm\b/i, /LeftForeArm/i, /Forearm[_\s]*[lL]\b/i, /[lL][_\s]*Forearm/i]],
+  [7,  [/lefthand/i, /LeftHand/i, /mixamorig[:]?LeftHand\b/i, /L[_\s]*Hand/i, /left[_\s]*hand/i]],
+  [8,  [/rightupleg/i, /RightUpLeg/i, /R[_\s]*Thigh/i, /right[_\s]*thigh/i]],
+  [9,  [/rightleg/i, /RightLeg/i, /R[_\s]*Calf/i, /right[_\s]*calf/i]],
+  [10, [/rightfoot/i, /RightFoot/i, /R[_\s]*Foot/i, /right[_\s]*foot/i]],
+  [11, [/leftupleg/i, /LeftUpLeg/i, /L[_\s]*Thigh/i, /left[_\s]*thigh/i]],
+  [12, [/leftleg/i, /LeftLeg/i, /L[_\s]*Calf/i, /left[_\s]*calf/i]],
+  [13, [/leftfoot/i, /LeftFoot/i, /L[_\s]*Foot/i, /left[_\s]*foot/i]],
+  [14, [/head/i, /mixamorig:Head/i]],                             // REye — 共享 head
   [15, [/head/i, /mixamorig:Head/i]],                             // LEye
   [16, [/head/i, /mixamorig:Head/i]],                             // REar
   [17, [/head/i, /mixamorig:Head/i]],                             // LEar

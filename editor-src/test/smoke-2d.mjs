@@ -35,7 +35,7 @@ const logs = [];
 page.on("console", (m) => { logs.push(`[${m.type()}] ${m.text()}`); });
 page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));
 
-await page.goto(`http://127.0.0.1:${port}/index.html`);
+await page.goto(`http://127.0.0.1:${port}/index.html?force2d=1`);
 await page.waitForTimeout(2500);
 
 // 1. canvas 挂载检查

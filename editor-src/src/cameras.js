@@ -227,6 +227,7 @@ export class CameraManager {
     this.cameras = [];
     this._activeCameraId = null;
 
+    let maxNumericId = 0;
     data.forEach((item, i) => {
       const fov = focalMMToVFov(item.focalMM || 35);
       const cam = new THREE.PerspectiveCamera(fov, aspect, 0.1, 100);
@@ -243,9 +244,12 @@ export class CameraManager {
         focalMM: item.focalMM || 35,
         dataUrl: item.dataUrl || null,
       };
+      const idMatch = /^cam_(\d+)$/.exec(entry.id);
+      if (idMatch) maxNumericId = Math.max(maxNumericId, parseInt(idMatch[1], 10));
       this.cameras.push(entry);
       if (!this._activeCameraId) this._activeCameraId = entry.id;
     });
+    if (maxNumericId > 0) _camNextId = Math.max(_camNextId, maxNumericId + 1);
 
     // If no cameras deserialized, init default
     if (this.cameras.length === 0) {

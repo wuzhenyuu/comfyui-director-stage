@@ -67,6 +67,19 @@ function collectSceneData() {
     data.sceneGz = ds.encodeSceneGz();
   }
 
+  // P1.5：外部 3D角色（GLB/VRM）快照
+  const extMgr = ds?.externalCharacters;
+  if (extMgr && typeof extMgr.snapshot === "function") {
+    const snap = extMgr.snapshot();
+    data.externalCharacters = snap.characters;
+    data.activeExternalCharacterId = snap.activeCharacterId;
+  }
+
+  // 核心B：自定义姿态预设（随 sceneJSON.posePresets / 工程文件持久化）
+  if (typeof ds?.posePresets?.serialize === "function") {
+    data.posePresets = ds.posePresets.serialize();
+  }
+
   return data;
 }
 
@@ -221,9 +234,27 @@ async function _doImport(file) {
       setSceneSettings(data.sceneSettings);
     }
 
+    // 6.5) 核心B：恢复自定义姿态预设（旧工程无该字段则跳过）
+    if (Array.isArray(data.posePresets) && ds?.posePresets?.restore) {
+      ds.posePresets.restore(data.posePresets);
+    }
+
     // 7) 恢复焦距
     if (data.focalLength && ds?.setFocalLength) {
       ds.setFocalLength(data.focalLength);
+    }
+
+    // 7.5) P1.5：恢复外部 3D角色（GLB/VRM，异步加载模型）
+    if (Array.isArray(data.externalCharacters) && data.externalCharacters.length > 0 && ds?.externalCharacters) {
+      ds.externalCharacters.restore({
+        characters: data.externalCharacters,
+        activeCharacterId: data.activeExternalCharacterId || null,
+      }).then((ok) => {
+        if (ok && window.__dsSetCharacterMode) {
+          window.__dsSetCharacterMode(ds.externalCharacters.getActive()?.type || "glb");
+        }
+        window.dispatchEvent(new CustomEvent("ds-project-loaded"));
+      }).catch((e) => console.warn("[工程IO] 外部角色恢复失败:", e));
     }
 
     // 8) 通知更新

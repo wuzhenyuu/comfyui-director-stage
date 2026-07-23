@@ -19,6 +19,13 @@ let viewportEl = null;
 let ctx2d = null;
 let canvas2d = null;
 
+// WebGL 视口渲染器（P1-A/B）：与导出用懒加载 renderer 完全分离，互不影响尺寸
+let viewportWebGLRenderer = null;
+let webglCanvas = null;
+// 2D 投影绘制开关：WebGL 模式下 2D canvas 仅作透明交互层
+// （事件绑定/拾取缓存 __ds_jointScreen/__ds_propScreen 照常填充，但不绘制投影）
+let paint2dEnabled = true;
+
 /** 创建 2D Canvas（启动时绝不触碰 WebGL） */
 export function createRenderer() {
   canvas2d = document.createElement("canvas");
@@ -59,6 +66,69 @@ export function getViewportCanvas() {
   return canvas2d;
 }
 
+/** 2D 投影绘制开关（render-mode.js 在 WebGL 模式下关闭绘制，仅保留拾取缓存） */
+export function set2DPaintEnabled(enabled) {
+  paint2dEnabled = !!enabled;
+}
+export function is2DPaintEnabled() {
+  return paint2dEnabled;
+}
+
+/**
+ * 创建视口专用 WebGLRenderer（P1-A/B）。
+ * 与 getRenderer() 的导出用 renderer 是两个独立实例：
+ * 导出 setSize 不会影响编辑视口，视口 resize 也不会污染导出通道。
+ * 失败（无 GPU/WebGL2）抛异常，由 render-mode.js 捕获并回退 2D。
+ */
+export function createViewportWebGL() {
+  if (viewportWebGLRenderer) return webglCanvas;
+  // 快速能力探测：拿不到 webgl2/webgl context 直接抛错走 2D 兜底，避免 THREE 半初始化
+  const probe = document.createElement("canvas");
+  const gl = probe.getContext("webgl2") || probe.getContext("webgl");
+  if (!gl) throw new Error("WebGL context unavailable");
+  // 释放探测 context，避免占用浏览器 WebGL context 配额
+  try { gl.getExtension("WEBGL_lose_context")?.loseContext(); } catch (e) { /* ignore */ }
+
+  viewportWebGLRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  viewportWebGLRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  viewportWebGLRenderer.setSize(512, 768, false);
+  webglCanvas = viewportWebGLRenderer.domElement;
+  webglCanvas.dataset.role = "webgl-viewport";
+  return webglCanvas;
+}
+
+export function getViewportWebGLRenderer() {
+  return viewportWebGLRenderer;
+}
+export function getWebGLCanvas() {
+  return webglCanvas;
+}
+
+/** 将 WebGL canvas 挂载到 viewport，插在 2D canvas 之下（2D canvas 恒为最上交互层） */
+export function mountWebGLCanvas(viewportElem) {
+  if (!webglCanvas) return;
+  webglCanvas.style.display = "block";
+  webglCanvas.style.position = "absolute";
+  if (canvas2d && canvas2d.parentNode === viewportElem) {
+    viewportElem.insertBefore(webglCanvas, canvas2d);
+  } else {
+    viewportElem.appendChild(webglCanvas);
+  }
+  layoutViewport();
+}
+
+/** 渲染一帧 WebGL 视口；渲染抛异常时返回 false（调用方负责回退 2D） */
+export function renderViewportWebGL(cameraRef) {
+  if (!viewportWebGLRenderer || !scene || !cameraRef) return false;
+  try {
+    viewportWebGLRenderer.render(scene, cameraRef);
+    return true;
+  } catch (e) {
+    console.warn("[3D导演台] WebGL 视口渲染异常：", e?.message || e);
+    return false;
+  }
+}
+
 /** 创建 Three.js 场景（仅用于导出与数据模型） */
 export function createScene() {
   scene = new THREE.Scene();
@@ -89,15 +159,12 @@ export function getCamera() { return camera; }
 export function getScene() { return scene; }
 export function getSceneHelpers() { return { grid, axes }; }
 
-/**
- * 信箱式布局：按相机 aspect 把 canvas2d 居中放进 viewport
- * （修复全视口铺满导致的投影拉伸变形）
- */
-export function layoutCanvas2d() {
-  if (!canvas2d || !viewportEl) return;
+/** 信箱式布局计算：按相机 aspect 算出在 viewport 内居中的可视矩形 */
+function computeLetterbox() {
+  if (!viewportEl) return null;
   const cw = viewportEl.clientWidth;
   const ch = viewportEl.clientHeight;
-  if (cw <= 0 || ch <= 0) return;
+  if (cw <= 0 || ch <= 0) return null;
   const aspect = (camera && camera.aspect) || (cw / ch);
   let vw = cw;
   let vh = Math.round(cw / aspect);
@@ -105,17 +172,43 @@ export function layoutCanvas2d() {
     vh = ch;
     vw = Math.round(ch * aspect);
   }
-  const ox = Math.round((cw - vw) / 2);
-  const oy = Math.round((ch - vh) / 2);
-  canvas2d.style.width = vw + "px";
-  canvas2d.style.height = vh + "px";
-  canvas2d.style.left = ox + "px";
-  canvas2d.style.top = oy + "px";
-  // HiDPI：内部分辨率 2 倍，绘制坐标系用 CSS 像素
-  canvas2d.width = vw * 2;
-  canvas2d.height = vh * 2;
-  ctx2d = canvas2d.getContext("2d");
-  ctx2d.scale(2, 2);
+  return { vw, vh, ox: Math.round((cw - vw) / 2), oy: Math.round((ch - vh) / 2) };
+}
+
+/**
+ * 统一信箱布局：2D canvas 与 WebGL canvas 套用同一可视矩形，
+ * 保证两种模式（及 WebGL 下的透明交互层）坐标系完全一致。
+ */
+export function layoutViewport() {
+  const box = computeLetterbox();
+  if (!box) return;
+  const { vw, vh, ox, oy } = box;
+
+  if (canvas2d && canvas2d.parentNode) {
+    canvas2d.style.width = vw + "px";
+    canvas2d.style.height = vh + "px";
+    canvas2d.style.left = ox + "px";
+    canvas2d.style.top = oy + "px";
+    // HiDPI：内部分辨率 2 倍，绘制坐标系用 CSS 像素
+    canvas2d.width = vw * 2;
+    canvas2d.height = vh * 2;
+    ctx2d = canvas2d.getContext("2d");
+    ctx2d.scale(2, 2);
+  }
+
+  if (viewportWebGLRenderer && webglCanvas && webglCanvas.parentNode) {
+    viewportWebGLRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    viewportWebGLRenderer.setSize(vw, vh, false);
+    webglCanvas.style.width = vw + "px";
+    webglCanvas.style.height = vh + "px";
+    webglCanvas.style.left = ox + "px";
+    webglCanvas.style.top = oy + "px";
+  }
+}
+
+/** 兼容旧名：仅重排（现在同时处理 2D 与 WebGL canvas） */
+export function layoutCanvas2d() {
+  layoutViewport();
 }
 
 /** 将 2D canvas 挂载到 DOM */
@@ -179,29 +272,39 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
   // 清屏（坐标系已 scale(2,2)，用 CSS 像素）
   ctx2d.clearRect(0, 0, w, h);
 
-  // 背景
-  ctx2d.fillStyle = "#222233";
-  ctx2d.fillRect(0, 0, w, h);
+  // 背景（WebGL 模式下 2D canvas 是透明交互层，不绘制）
+  if (paint2dEnabled) {
+    ctx2d.fillStyle = "#222233";
+    ctx2d.fillRect(0, 0, w, h);
 
-  // 网格
-  drawGrid(w, h);
+    // 网格
+    drawGrid(w, h);
+  }
+
+  // 道具：2D 视口必须把 PropManager 里的 mesh 投影画出来
+  // （否则添加道具只存在于 Three 场景里，用户在框内完全看不见）
+  // WebGL 模式下仍调用：仅填充 __ds_propScreen 拾取缓存，不绘制（内部判 paint2dEnabled）
+  drawProps2D(cameraRef, w, h);
 
   // 每帧重置屏幕拾取缓存（pointerdown 的屏幕空间拾取依赖它）
   window.__ds_jointScreen = [];
 
   if (!cameraRef) return;
 
+  const externalCharacterMode = !!(window.__ds?.isGLBMode || window.__ds?.isVRMMode);
+
   // 火柴人：多角色遍历（无 DS_FigureAPI 时 fallback 画传入的 joints）
+  // 外部 GLB/VRM 角色模式下不再绘制/缓存隐藏火柴人，避免拾取串台。
   const api = window.DS_FigureAPI;
   let chars = [];
-  if (api) {
+  if (!externalCharacterMode && api) {
     try {
       const all = api.getAllCharacters();
       if (all && typeof all.forEach === "function") all.forEach((ch) => chars.push(ch));
     } catch (e) { /* ignore */ }
   }
   const active = api ? api.getActiveCharacter() : null;
-  if (chars.length) {
+  if (!externalCharacterMode && chars.length) {
     // 非活动角色先画，活动角色最后画（压在最上层）
     chars.sort((a, b) => (a === active ? 1 : 0) - (b === active ? 1 : 0));
     for (const ch of chars) {
@@ -216,17 +319,23 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
         charId: String(ch.id),
       });
     }
-  } else {
+  } else if (!externalCharacterMode) {
     drawStickFigure(joints, cameraRef, w, h, fkMode);
   }
 
   // IK 模式：把 IK target/pole 也投影画出来（否则 2D 里完全点不到）
-  if (fkMode) drawIKTargets(cameraRef, w, h);
+  // 外部 GLB/VRM 角色模式强制缓存外部 IK 目标，确保 WebGL/2D 都能拖。
+  if (fkMode || externalCharacterMode) drawIKTargets(cameraRef, w, h);
+
+  // P3-0：Canvas2D 骨骼显示（WebGL 模式由 THREE.SkeletonHelper 负责，此处跳过）
+  if (externalCharacterMode && typeof window.__ds_drawBones2D === "function") {
+    window.__ds_drawBones2D(cameraRef, w, h, ctx2d, paint2dEnabled);
+  }
 
   // 原点信标
   const beaconPos = new THREE.Vector3(0, 1, 0);
   beaconPos.project(cameraRef);
-  if (beaconPos.z < 1) { // 相机前方才画
+  if (paint2dEnabled && beaconPos.z < 1) { // 相机前方才画
     const bx = (beaconPos.x + 1) / 2 * w;
     const by = (1 - beaconPos.y) / 2 * h;
     ctx2d.beginPath();
@@ -245,6 +354,159 @@ function drawGrid(w, h) {
   }
   for (let y = 0; y <= h; y += step) {
     ctx2d.beginPath(); ctx2d.moveTo(0, y); ctx2d.lineTo(w, y); ctx2d.stroke();
+  }
+}
+
+/** 投影绘制道具（线框 + 选中包围盒 + 名称标签） */
+function drawProps2D(cameraRef, w, h) {
+  if (!cameraRef) return;
+  const pm = window.__ds?.propManager;
+  const entries = pm?.props || [];
+  window.__ds_propScreen = [];
+  if (!entries.length) return;
+
+  const selected = typeof pm.getSelected === "function" ? pm.getSelected() : null;
+  const centerV = new THREE.Vector3();
+
+  for (const entry of entries) {
+    const root = entry?.mesh;
+    if (!root || !isVisibleInTree(root)) continue;
+
+    root.updateWorldMatrix(true, true);
+    let projectedSegments = 0;
+    root.traverse((obj) => {
+      if (!obj.isMesh || !obj.geometry) return;
+      projectedSegments += drawMeshEdges(obj, cameraRef, w, h, entry === selected);
+    });
+
+    // 极端情况下（几何体为空/全部被裁剪）仍画包围盒，保证道具可见
+    const box = new THREE.Box3().setFromObject(root);
+    if (!box.isEmpty()) {
+      if (projectedSegments === 0 || entry === selected) {
+        drawBoundingBox(box, cameraRef, w, h, entry === selected);
+      }
+      box.getCenter(centerV);
+      const labelPos = projectPoint(centerV, cameraRef, w, h);
+      if (labelPos && !labelPos.behind) {
+        window.__ds_propScreen.push({ id: entry.id, x: labelPos.x, y: labelPos.y, behind: false });
+        if (!paint2dEnabled) continue; // WebGL 模式：只要拾取缓存，不画标签
+        ctx2d.font = "11px sans-serif";
+        ctx2d.textAlign = "center";
+        ctx2d.fillStyle = entry === selected ? "#00ff88" : "#c9d4ff";
+        ctx2d.strokeStyle = "rgba(0,0,0,0.75)";
+        ctx2d.lineWidth = 3;
+        ctx2d.strokeText(entry.name || entry.id, labelPos.x, labelPos.y - 8);
+        ctx2d.fillText(entry.name || entry.id, labelPos.x, labelPos.y - 8);
+      }
+    }
+  }
+}
+
+function isVisibleInTree(obj) {
+  let cur = obj;
+  while (cur) {
+    if (cur.visible === false) return false;
+    cur = cur.parent;
+  }
+  return true;
+}
+
+function getMeshColor(obj, fallback = "#5b8def") {
+  const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  return mat?.color ? `#${mat.color.getHexString()}` : fallback;
+}
+
+function projectPoint(vec, cameraRef, w, h) {
+  const p = vec.clone().project(cameraRef);
+  const behind = p.z < -1 || p.z > 1;
+  return {
+    x: (p.x + 1) / 2 * w,
+    y: (1 - p.y) / 2 * h,
+    behind,
+  };
+}
+
+function drawMeshEdges(mesh, cameraRef, w, h, selected) {
+  if (!isVisibleInTree(mesh)) return 0;
+  const paint = paint2dEnabled; // WebGL 模式只计算段数（供包围盒 fallback 判断），不画线
+
+  // 缓存 EdgesGeometry；几何体不变时每帧只投影，不重复拆边
+  let edgeGeo = mesh.userData.__dsEdgeGeometry;
+  if (!edgeGeo || mesh.userData.__dsEdgeSource !== mesh.geometry) {
+    if (edgeGeo) edgeGeo.dispose();
+    edgeGeo = new THREE.EdgesGeometry(mesh.geometry, 30);
+    mesh.userData.__dsEdgeGeometry = edgeGeo;
+    mesh.userData.__dsEdgeSource = mesh.geometry;
+  }
+
+  const pos = edgeGeo.getAttribute("position");
+  if (!pos || pos.count < 2) return 0;
+
+  // 导入模型可能很密：限制 2D 线框段数，避免每帧卡顿
+  const maxSegments = 3000;
+  const totalSegments = Math.floor(pos.count / 2);
+  const stride = Math.max(1, Math.ceil(totalSegments / maxSegments));
+
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  let drawn = 0;
+
+  ctx2d.beginPath();
+  for (let seg = 0; seg < totalSegments; seg += stride) {
+    const i = seg * 2;
+    a.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+    b.fromBufferAttribute(pos, i + 1).applyMatrix4(mesh.matrixWorld);
+    const pa = projectPoint(a, cameraRef, w, h);
+    const pb = projectPoint(b, cameraRef, w, h);
+    if (pa.behind || pb.behind) continue;
+    if (paint) {
+      ctx2d.moveTo(pa.x, pa.y);
+      ctx2d.lineTo(pb.x, pb.y);
+    }
+    drawn++;
+  }
+
+  if (drawn > 0 && paint) {
+    ctx2d.strokeStyle = selected ? "#00ff88" : getMeshColor(mesh);
+    ctx2d.globalAlpha = selected ? 0.95 : 0.72;
+    ctx2d.lineWidth = selected ? 2.2 : 1.25;
+    ctx2d.stroke();
+    ctx2d.globalAlpha = 1;
+  }
+  return drawn;
+}
+
+function drawBoundingBox(box, cameraRef, w, h, selected) {
+  if (!paint2dEnabled) return; // WebGL 模式：包围盒由 3D 场景本身呈现
+  const min = box.min;
+  const max = box.max;
+  const corners = [
+    [min.x, min.y, min.z], [max.x, min.y, min.z],
+    [max.x, min.y, max.z], [min.x, min.y, max.z],
+    [min.x, max.y, min.z], [max.x, max.y, min.z],
+    [max.x, max.y, max.z], [min.x, max.y, max.z],
+  ].map((p) => projectPoint(new THREE.Vector3(p[0], p[1], p[2]), cameraRef, w, h));
+
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0],
+    [4,5],[5,6],[6,7],[7,4],
+    [0,4],[1,5],[2,6],[3,7],
+  ];
+
+  ctx2d.beginPath();
+  let drawn = 0;
+  for (const [ia, ib] of edges) {
+    const pa = corners[ia];
+    const pb = corners[ib];
+    if (pa.behind || pb.behind) continue;
+    ctx2d.moveTo(pa.x, pa.y);
+    ctx2d.lineTo(pb.x, pb.y);
+    drawn++;
+  }
+  if (drawn > 0) {
+    ctx2d.strokeStyle = selected ? "#00ff88" : "#8fa8ff";
+    ctx2d.lineWidth = selected ? 2.5 : 1.5;
+    ctx2d.stroke();
   }
 }
 
@@ -291,8 +553,8 @@ function drawStickFigure(joints, cameraRef, w, h, ikMode, opts) {
 
   const jointColor = (i) => charColor || colors[i % colors.length];
 
-  // 画肢
-  limbSeq.forEach(([a,b], i) => {
+  // 画肢（WebGL 模式跳过绘制，上方屏幕拾取缓存已填充）
+  if (paint2dEnabled) limbSeq.forEach(([a,b], i) => {
     const pa = screenPos[a], pb = screenPos[b];
     if (pa.behind || pb.behind) return;
     ctx2d.beginPath();
@@ -304,7 +566,7 @@ function drawStickFigure(joints, cameraRef, w, h, ikMode, opts) {
   });
 
   // 画关节（IK 模式下画小灰点仅作视觉参考，不参与拾取）
-  screenPos.forEach((p, i) => {
+  if (paint2dEnabled) screenPos.forEach((p, i) => {
     if (p.behind) return;
     const isSel = joints[i] === selectedJoint;
     const isHover = joints[i] === hoverJoint;
@@ -327,21 +589,46 @@ function drawIKTargets(cameraRef, w, h) {
   const list = [];
 
   const api = window.DS_FigureAPI;
-  const char = api ? api.getActiveCharacter() : null;
+  const externalGlbMode = !!window.__ds?.isGLBMode;
+  const externalVrmMode = !!window.__ds?.isVRMMode;
+  const externalMode = externalGlbMode || externalVrmMode;
+  const char = !externalMode && api ? api.getActiveCharacter() : null;
   const activeCharId = char ? String(char.id) : null;
   if (char) {
     for (const state of Object.values(char.ikState)) {
       list.push({ obj: state.target, kind: "target", charId: activeCharId }, { obj: state.pole, kind: "pole", charId: activeCharId });
     }
   }
-  if (window.__ds?.glbData?.ikTargets) {
-    for (const t of Object.values(window.__ds.glbData.ikTargets)) {
-      list.push({ obj: t.target, kind: "target", charId: null }, { obj: t.pole, kind: "pole", charId: null });
+  if (externalMode) {
+    const mgr = window.__ds?.externalCharacters;
+    if (mgr && mgr.characters?.size) {
+      // P1.5：枚举全部可见外部角色的 IK 目标（点击谁的球就激活谁；非活动角色略淡）
+      for (const entry of mgr.characters.values()) {
+        if (!entry.ikTargets) continue;
+        if (entry.visible === false) continue;
+        if (entry.model && entry.model.visible === false) continue;
+        const dim = mgr.activeCharacterId && entry.id !== mgr.activeCharacterId;
+        for (const t of Object.values(entry.ikTargets)) {
+          list.push({ obj: t.target, kind: "target", charId: entry.id, dim }, { obj: t.pole, kind: "pole", charId: entry.id, dim });
+        }
+      }
+    } else {
+      // 旧路径兼容
+      if (externalGlbMode && window.__ds?.glbData?.ikTargets) {
+        for (const t of Object.values(window.__ds.glbData.ikTargets)) {
+          list.push({ obj: t.target, kind: "target", charId: null }, { obj: t.pole, kind: "pole", charId: null });
+        }
+      }
+      if (externalVrmMode && window.__ds?.vrmData?.ikTargets) {
+        for (const t of Object.values(window.__ds.vrmData.ikTargets)) {
+          list.push({ obj: t.target, kind: "target", charId: null }, { obj: t.pole, kind: "pole", charId: null });
+        }
+      }
     }
   }
 
   const _v = new THREE.Vector3();
-  for (const { obj, kind, charId } of list) {
+  for (const { obj, kind, charId, dim } of list) {
     if (!obj) continue;
     // IK 球可能挂在有变换的父级下，必须用世界坐标投影
     obj.getWorldPosition(_v);
@@ -350,10 +637,11 @@ function drawIKTargets(cameraRef, w, h) {
     const sx = (_v.x + 1) / 2 * w;
     const sy = (1 - _v.y) / 2 * h;
     window.__ds_jointScreen.push({ x: sx, y: sy, behind, obj, charId });
-    if (behind) continue;
+    if (behind || !paint2dEnabled) continue;
     const isSel = obj === selectedJoint;
     const isHover = obj === hoverJoint;
     const r = kind === "target" ? (isSel ? 12 : isHover ? 11 : 9) : (isSel ? 7 : 6);
+    if (dim) ctx2d.globalAlpha = 0.45; // 非活动外部角色：淡显，提示点击可激活
     ctx2d.beginPath();
     ctx2d.arc(sx, sy, r, 0, Math.PI * 2);
     if (kind === "target") {
@@ -367,6 +655,7 @@ function drawIKTargets(cameraRef, w, h) {
       ctx2d.lineWidth = 1;
       ctx2d.stroke();
     }
+    if (dim) ctx2d.globalAlpha = 1;
   }
 }
 

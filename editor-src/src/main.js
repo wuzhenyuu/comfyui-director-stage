@@ -4,32 +4,39 @@
  */
 import * as THREE from "three";
 import { T_POSE } from "./constants.js";
-import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene, getCharacterGroups, setWireframeMode, drawFrame } from "./scene.js";
+import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene, getCharacterGroups, setWireframeMode, drawFrame, renderViewportWebGL } from "./scene.js";
+import * as renderMode from "./render-mode.js";
 import { createJoints, createBones, updateBones } from "./figure.js";
-import { createOrbit, createTransform, selectJoint, getSelected, setupPointerEvents, setupKeyboardShortcuts, getOrbit, getTransform, isBoneLockEnabled, setBoneLockEnabled } from "./controls.js";
+import { createExternalBodyMover, translateExternalCharacter } from "./external-character-move.js";
+import { createOrbit, createTransform, selectJoint, getSelected, setupPointerEvents, setupKeyboardShortcuts, getOrbit, getTransform, isBoneLockEnabled, setBoneLockEnabled, setExternalBodyMover } from "./controls.js";
 import { pushUndo, performUndo, performRedo, getUndoDepth, getRedoDepth, snapshot, restore } from "./undo.js";
-import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints } from "./serialization.js";
+import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints, applyDecodedToManager } from "./serialization.js";
 import * as cameraSettings from "./camera-settings.js";
 import { performApply, performBatchExport } from "./export.js";
 import { renderOpenPoseCanvas, renderDepthCanvas, renderNormalCanvas } from "./pass-renderer.js";
 import { setupProtocol, announceReady, getExportSize, getSceneJSON, setSceneJSON } from "./protocol.js";
-import { createPosePanel, loadPoseLibrary, mirrorPose, exportPoseJson } from "./pose-panel.js";
+import { mirrorPose } from "./pose-panel.js";
 import { applyViewport, setExportSize, getExportWH, setStatus, showToast, showProgress, hideProgress } from "./ui.js";
 import { CameraManager, focalMMToVFov, renderCameraListEntry } from "./cameras.js";
 import { PropManager } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
 import { createModelLibraryPanel } from "./model-library.js";
-import { loadGLBCharacter, createGLBIKTargets, getGLBJointPositions } from "./char-loader.js";
-import { loadVRMCharacter, createVRMIKTargets, getVRMJointPositions, createVRMImport } from "./vrm-loader.js";
+import { getGLBJointPositions } from "./char-loader.js";
+import { getVRMJointPositions, createVRMImport } from "./vrm-loader.js";
+import { ExternalCharacterManager, MAX_EXTERNAL_CHARACTERS } from "./external-characters.js";
+import { ActionRuntime } from "./action-runtime.js";
+import { SkeletonHelperManager, drawSkeleton2D } from "./skeleton-helper.js";
 import { createCharPropsPanel } from "./char-props-panel.js";
-import { createCharPanel, nextCharName } from "./char-panel.js";
-import { createSceneSettingsPanel } from "./scene-settings-panel.js";
-import { exportProject, importProject } from "./project-io.js";
+import { createExternalCharPanel } from "./external-char-panel.js";
+import { createSceneSettingsPanel, setSceneSettings } from "./scene-settings-panel.js";
+import { exportProject, importProject, collectSceneData } from "./project-io.js";
 import "./clipboard.js";  // 注册 copyToClipboard/pasteFromClipboard 和键盘快捷键
 import { mountCameraGlobals } from "./cameras.js";
 import { mountControlsGlobals } from "./controls.js";
 import { mountThumbnailCapture } from "./thumbnail-capture.js";
+import { createBoneEditor } from "./bone-editor.js";
+import { serialize as serializePosePresets, restore as restorePosePresets } from "./pose-presets.js";
 
 /* ========================= DOM 引用 ========================= */
 
@@ -69,10 +76,29 @@ cameraManager.initDefaultCamera(1, 35);
 cameraManager.cameras[0].camera = defaultCamera;
 cameraManager.cameras[0].pos = defaultCamera.position.toArray();
 
-/* ========================= 火柴人（M1 兼容） ========================= */
+/* ========================= 渲染模式（P1-A/B：auto/webgl/canvas2d） ========================= */
+// 必须在 mountRenderer 之后调用（2D canvas 已挂载）；
+// WebGL 可用则进入 webgl 模式，失败自动回退 canvas2d；?force2d=1 强制 2D。
+renderMode.initRenderMode({
+  viewportEl,
+  getCamera: () => cameraManager.getActiveCamera()?.camera || defaultCamera,
+});
+renderMode.onModeChange(() => {
+  if (typeof refreshModeBtnUI === "function") refreshModeBtnUI();
+});
+
+/** 顶栏渲染模式指示器刷新函数（injectTopbarControls 内赋值） */
+let refreshModeBtnUI = null;
+/** 顶栏 3D角色按钮刷新函数（injectTopbarControls 内赋值） */
+let refreshExtBtnUI = null;
+// 外部角色增删/激活变化时刷新按钮状态
+window.addEventListener("ds-external-char-changed", () => refreshExtBtnUI?.());
+
+/* ========================= 火柴人（P3-1：3D-only，底层保留但永久隐藏/不可交互/不导出） ========================= */
 
 const figureGroup = new THREE.Group();
 figureGroup.name = "figure_group";
+figureGroup.visible = false; // P3-1 3D-only：火柴人永不显示（renderLoop 每帧防御性压制）
 scene.add(figureGroup);
 const joints = createJoints(figureGroup);
 const bones = createBones(figureGroup);
@@ -81,6 +107,30 @@ updateBones(joints, bones);
 /* ========================= PropManager ========================= */
 
 const propManager = new PropManager(scene, defaultCamera, viewportCanvas);
+
+/* ========================= 外部角色（GLB/VRM）管理器 ========================= */
+// P1.5：多 3D角色。ExternalCharacterManager 统一管理所有 GLB/VRM 外部角色，
+// 每个角色独立 IK target/pole 组、自动错位出生（上限 8）。
+// 兼容：window.__ds.glbData/vrmData 由 _dsRef getter 动态指向活动 GLB/VRM entry。
+// characterMode 必须放在模块作用域：renderLoop 的 IK 求解与 VRM 回调都要访问，
+// 放在 injectTopbarControls 局部会导致 3D角色加载后下一帧 ReferenceError，骨骼完全不动。
+const externalManager = new ExternalCharacterManager(scene);
+// P3-1 3D-only：默认即外部 3D角色模式，不再提供火柴人用户路径（setCharacterMode 拒绝 "stick"）
+let characterMode = "glb"; // glb | vrm（均为“外部角色模式”，仅标记来源类型；stick 已禁用）
+
+// P3-0：动作运行时（每 external entry 独立 action state，驱动 ikTargets + 骨盆）
+const actionRuntime = new ActionRuntime(externalManager);
+// P3-0：骨骼显示管理器（WebGL=THREE.SkeletonHelper；2D=drawSkeleton2D 投影）
+const skeletonHelpers = new SkeletonHelperManager(scene, externalManager);
+// Canvas2D 骨骼投影钩子（scene.js drawFrame 调用；仅 2D 绘制模式生效）
+window.__ds_drawBones2D = (camRef, w, h, ctx2d, paint) => {
+  if (!paint || !skeletonHelpers.enabled) return;
+  drawSkeleton2D(externalManager, camRef, w, h, ctx2d);
+  // P3-2：骨骼编辑标记辅助线（WebGL 已有 markerGroup，2D 需要 draw2D）
+  if (boneEditor && typeof boneEditor.draw2D === "function") {
+    boneEditor.draw2D(camRef, w, h, ctx2d);
+  }
+};
 
 /* ========================= 交互（全部绑定到可见的 2D canvas） ========================= */
 
@@ -94,6 +144,30 @@ tctrl.enabled = false;
 propManager.onDragChanged((dragging) => {
   orbit.enabled = !dragging;
 });
+
+// P3-1：3D角色整体移动器（点身体拖整人，Alt=升降；IK 球摆姿势不受影响）
+const bodyMover = createExternalBodyMover({
+  scene,
+  manager: externalManager,
+  getCamera: () => cameraManager.getActiveCamera()?.camera || defaultCamera,
+});
+setExternalBodyMover(bodyMover);
+
+// P3-2：骨骼编辑模式（直接操作骨骼节点 + 3D Gizmo）
+const boneEditor = createBoneEditor({
+  scene,
+  manager: externalManager,
+  actionRuntime,
+  skeletonHelpers,
+  getCamera: () => cameraManager.getActiveCamera()?.camera || defaultCamera,
+  dom: viewportCanvas,
+  getOrbit: () => orbit,
+  solveEntry: (entry) => {
+    if (entry.type === "vrm") solveVRM_IK(entry);
+    else solveGLB_IK(entry);
+  },
+});
+
 setupPointerEvents(viewportCanvas, joints);
 setupKeyboardShortcuts(joints, () => {
   updateBones(joints, bones);
@@ -227,8 +301,10 @@ function syncActiveCamera() {
   orbit.object = ac.camera;
   orbit.target.copy(new THREE.Vector3().fromArray(ac.target));
   orbit.update();
-  // defaultCamera 渲染时用活动相机
+  // defaultCamera 渲染时用活动相机；PropManager 的拾取/TransformControls 也要跟随
   defaultCamera.copy(ac.camera);
+  propManager.camera = ac.camera;
+  if (propManager.tctrl) propManager.tctrl.camera = ac.camera;
 }
 
 // Keyboard shortcut for camera switching
@@ -264,91 +340,16 @@ sidebarTabs.addEventListener("click", (e) => {
 
 /* ========================= 填充面板 ========================= */
 
-// 角色管理面板（👥 添加/删除/重命名/切换，挂在姿势库上方）
-const charMgrUI = createCharPanel(
-  charPanel,
-  () => {
-    // onAdd：创建 + 激活 + 刷新（create 达上限返回 null，toast 已弹出）
-    const api = window.DS_FigureAPI;
-    if (!api) return;
-    pushUndo(null);
-    const c = api.addCharacter(nextCharName(api.getCharacterCount()));
-    if (!c) return;
-    api.setActive(c.id);
-    refreshCharList();
-    showToast(`已添加「${c.name}」`, false);
-  },
-  (id) => {
-    // onDelete：至少保留 1 人
-    const api = window.DS_FigureAPI;
-    if (!api) return;
-    if (api.getCharacterCount() <= 1) {
-      showToast("至少保留 1 人", false);
-      return;
-    }
-    pushUndo(null);
-    api.removeCharacter(id);
-    refreshCharList();
-  },
-  (id, newName) => {
-    const c = window.DS_FigureAPI?.getCharacter(id);
-    if (c) { c.name = newName; refreshCharList(); }
-  },
-  (id) => {
-    window.DS_FigureAPI?.setActive(id);
-    refreshCharList();
-  }
-);
+// P3-1 3D-only：火柴人角色列表面板（createCharPanel）已移除。
+// 角色面板现在只包含外部 3D角色列表 + 动作栏。
 
-/** 刷新角色列表（char.color 本身是 CSS 字符串，直接可用） */
-function refreshCharList() {
-  const api = window.DS_FigureAPI;
-  if (!api) return;
-  charMgrUI.render(api.getCharacterList(), api.getActiveCharacter()?.id);
-}
-refreshCharList();
-// 切角色/点中自动激活时同步列表高亮（controls.js updateCharPanelIfExists 会 dispatch）
-window.addEventListener("ds-char-changed", refreshCharList);
+// P1.5b：外部 3D角色面板（P3-1 起为角色面板唯一内容）
+// 行点击激活；👁/✏️/🗑️ 由面板内部直调 manager API；头部 ➕ 按钮添加新角色
+const extCharUI = createExternalCharPanel(charPanel, externalManager, { actionRuntime });
+window.__dsExternalCharPanel = extCharUI; // 调试/测试钩子
 
-// 角色面板 — 姿势库
-const posePanel = createPosePanel();
-charPanel.appendChild(posePanel);
-
-loadPoseLibrary((poseArr) => {
-  // M2 修复：使用 DS_FigureAPI.applyPoseToActive 将姿势同时应用到球体和骨骼
-  const api = window.DS_FigureAPI;
-  if (api && api.applyPoseToActive) {
-    pushUndo(null);
-    api.applyPoseToActive(poseArr);
-  } else {
-    // M1 降级
-    pushUndo(joints);
-    restore(joints, poseArr);
-    updateBones(joints, bones);
-  }
-  cameraSettings.updateOverlay();
-  updateStatus();
-});
-
-document.getElementById("poseMirror").addEventListener("click", () => {
-  const api = window.DS_FigureAPI;
-  if (api && api.applyPoseToActive) {
-    pushUndo(null);
-    const mirrored = mirrorPose(window.__ds.joints);
-    api.applyPoseToActive(mirrored);
-  } else {
-    pushUndo(joints);
-    const mirrored = mirrorPose(joints);
-    restore(joints, mirrored);
-    updateBones(joints, bones);
-  }
-  cameraSettings.updateOverlay();
-  updateStatus();
-});
-
-document.getElementById("poseExport").addEventListener("click", () => {
-  exportPoseJson(joints);
-});
+// P3-1 3D-only：火柴人姿势库面板（createPosePanel/loadPoseLibrary/poseMirror/poseExport）已移除。
+// 3D角色姿势通过 IK 球拖拽 + 动作预设（external-char-panel 动作栏）实现。
 
 // 机位面板
 const camPanelUI = createCameraPanel();
@@ -428,108 +429,118 @@ function injectTopbarControls() {
   thirdsLabel.appendChild(thirdsCheckbox);
   thirdsLabel.appendChild(document.createTextNode("卌"));
 
-  // ── 骨长锁定 ──
-  const lockLabel = document.createElement("label");
-  lockLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
-  const lockCheckbox = document.createElement("input");
-  lockCheckbox.type = "checkbox";
-  lockCheckbox.checked = true;
-  lockCheckbox.style.cssText = "accent-color:#2f9e63;";
-  lockCheckbox.addEventListener("change", () => {
-    setBoneLockEnabled(lockCheckbox.checked);
-  });
-  lockLabel.appendChild(lockCheckbox);
-  lockLabel.appendChild(document.createTextNode("🔒骨长"));
+  // ── P3-1 3D-only：骨长锁定 / FK-IK 切换 / 整人移动（火柴人专属控件）已移除 ──
 
-  // ── IK 模式切换（默认关闭 = FK 自由拖关节）──
-  const ikLabel = document.createElement("label");
-  ikLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
-  const ikCheckbox = document.createElement("input");
-  ikCheckbox.type = "checkbox";
-  ikCheckbox.checked = false;  // 默认 FK 模式
-  ikCheckbox.style.cssText = "accent-color:#2f9e63;";
-  ikCheckbox.addEventListener("change", () => {
-    window.__ds.fkMode = ikCheckbox.checked;
-    showToast(ikCheckbox.checked ? "🦴IK模式：拖手脚球摆姿势" : "🦴FK自由模式：直接拖关节", false);
-    updateStatus();
-  });
-  ikLabel.appendChild(ikCheckbox);
-  ikLabel.appendChild(document.createTextNode("🦴IK"));
+  // ── P3-1：添加3D角色（主入口，自动错位出生 + 自动激活，上限 8）──
+  // 文案保留「添加GLB」子串（多角色/导出/动作测试均按该文本定位按钮）
+  const addExtBtn = document.createElement("button");
+  addExtBtn.id = "btnAddExternal";
+  addExtBtn.dataset.addExternalChar = "1";
+  addExtBtn.textContent = "➕添加GLB（3D角色）";
+  addExtBtn.title = `再加载一个 3D角色（最多 ${MAX_EXTERNAL_CHARACTERS} 个，自动错位出生并激活；点身体拖整人，Alt=升降，拖 IK 球摆姿势）`;
+  addExtBtn.style.cssText = "padding:6px 10px;font-size:12px;";
 
-  // ── 整人移动（契约 2：默认关闭；ON 时拖普通关节平移该角色全部关节）──
-  const wholeBodyLabel = document.createElement("label");
-  wholeBodyLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
-  const wholeBodyCheckbox = document.createElement("input");
-  wholeBodyCheckbox.type = "checkbox";
-  wholeBodyCheckbox.id = "wholeBodyCheckbox";
-  wholeBodyCheckbox.checked = false;  // 默认关闭
-  wholeBodyCheckbox.style.cssText = "accent-color:#2f9e63;";
-  window.__ds_moveWholeBody = false;
-  wholeBodyCheckbox.addEventListener("change", () => {
-    window.__ds_moveWholeBody = wholeBodyCheckbox.checked;
-    showToast(wholeBodyCheckbox.checked ? "🧍整人移动：拖任一关节平移整个人" : "🧍整人移动已关闭", false);
+  // ── P3-0：骨骼显示开关（默认开；与 3D角色面板内的开关共享状态）──
+  const skeletonLabel = document.createElement("label");
+  skeletonLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const skeletonCheckbox = document.createElement("input");
+  skeletonCheckbox.type = "checkbox";
+  skeletonCheckbox.id = "skeletonCheckbox";
+  skeletonCheckbox.checked = true;
+  skeletonCheckbox.style.cssText = "accent-color:#2f9e63;";
+  skeletonCheckbox.addEventListener("change", () => {
+    skeletonHelpers.setEnabled(skeletonCheckbox.checked);
+    showToast(skeletonCheckbox.checked ? "🦴骨骼显示已开启" : "🦴骨骼显示已关闭", false);
   });
-  wholeBodyLabel.appendChild(wholeBodyCheckbox);
-  wholeBodyLabel.appendChild(document.createTextNode("🧍整人移动"));
+  skeletonLabel.appendChild(skeletonCheckbox);
+  skeletonLabel.appendChild(document.createTextNode("🦴骨骼"));
+  window.addEventListener("ds-skeleton-changed", (e) => {
+    skeletonCheckbox.checked = e.detail?.enabled !== false;
+  });
 
-  // ── GLB 3D角色切换 ──
-  const glbBtn = document.createElement("button");
-  glbBtn.textContent = "🔄3D角色";
-  glbBtn.title = "加载UE人体模型替换火柴人（含骨骼IK）";
-  glbBtn.style.cssText = "padding:6px 10px;font-size:12px;";
-  let glbLoaded = false;
-  let glbData = null;
-  glbBtn.addEventListener("click", async () => {
-    if (glbLoaded) {
-      showToast("3D角色已加载", false);
-      return;
+  // 使用模块级 externalManager / characterMode 状态（renderLoop 与 VRM 回调共享）
+
+  function updateExtButtonsUI() {
+    addExtBtn.style.opacity = externalManager.size >= MAX_EXTERNAL_CHARACTERS ? "0.5" : "";
+  }
+  refreshExtBtnUI = updateExtButtonsUI;
+
+  // P3-1 3D-only：只允许 glb/vrm；stick 请求直接忽略（不再允许切回火柴人）
+  function setCharacterMode(mode) {
+    if (mode === "stick") return characterMode;
+    if (!["glb", "vrm"].includes(mode)) return characterMode;
+    characterMode = mode;
+
+    // 火柴人永久隐藏（防御：restore/setActive 等路径可能重新点亮，renderLoop 每帧再压制一次）
+    figureGroup.visible = false;
+    const manager = window.DS_FigureAPI?.getManager?.();
+    if (manager?.ikTargetsGroup) manager.ikTargetsGroup.visible = false;
+
+    // 显示全部可见外部角色（manager 内部叠加单角色 visible 标记）
+    externalManager.setModeVisible(true);
+    externalManager.markAllIKDirty();
+
+    // 外部角色强制 IK 路径（isGLBMode/isVRMMode/characterMode 由 _dsRef getter 读取模块变量）
+    if (window.__ds) {
+      window.__ds.fkMode = true;
     }
-    glbBtn.disabled = true;
-    glbBtn.textContent = "⏳加载中…";
+
+    updateExtButtonsUI();
+    updateStatus();
+    return characterMode;
+  }
+
+  // VRM 加载回调在 injectTopbarControls 外层注册，通过全局桥接调用模式切换
+  window.__dsSetCharacterMode = setCharacterMode;
+
+  /** P1.5：加载一个 GLB 外部角色（首个或追加）；返回 entry 或 null
+   *  P3-0：opts.silent = 静默模式（默认角色自动加载用）：不弹 toast/错误 */
+  async function loadMoreGLB(url = "/director_stage/models/michelle.glb", opts = {}) {
+    const silent = !!opts.silent;
+    if (externalManager.size >= MAX_EXTERNAL_CHARACTERS) {
+      if (!silent) showToast(`最多 ${MAX_EXTERNAL_CHARACTERS} 个 3D角色`, true);
+      return null;
+    }
+    addExtBtn.disabled = true;
+    const prevBtnText = addExtBtn.textContent;
+    addExtBtn.textContent = "⏳加载中…";
     try {
-      const url = "/director_stage/models/ue-mannequin-retopology.glb";
-      glbData = await loadGLBCharacter(url, scene);
-      // 创建 IK 目标球
-      const { targets, group } = createGLBIKTargets(glbData.jointMap);
-      glbData.ikTargets = targets;
-      glbData.ikTargetsGroup = group;
-      scene.add(group);
-      
-      // 隐藏火柴人
-      figureGroup.visible = false;
-      
-      // 注册 GLB 接口到 window
-      window.__ds.glbData = glbData;
-      window.__ds.isGLBMode = true;
-      
-      glbLoaded = true;
-      glbBtn.textContent = "🔄3D角色 ✅";
-      glbBtn.style.background = "#2f9e63";
-      showToast("3D角色已加载！拖手脚球摆姿势（先勾选🦴IK）", false);
-      
-      // 自动更新关节引用
-      if (window.DS_FigureAPI) {
-        window.__ds._glbJointRef = () => {
-          const joints = getGLBJointPositions(glbData.jointMap);
-          return joints.map(p => {
-            const m = new THREE.Mesh();
-            m.position.set(p[0], p[1], p[2]);
-            m.userData = { index: joints.indexOf(p) };
-            return m;
-          });
-        };
+      const entry = await externalManager.addGLB(url);
+      if (!entry) throw new Error("角色创建失败");
+      externalManager.setActive(entry.id); // P3-1：添加后自动激活新角色
+      setCharacterMode("glb");
+      if (!silent) {
+        showToast(externalManager.size === 1
+          ? "3D角色已加载！点身体拖动整人（Alt=升降），拖青/黄 IK 球摆姿势"
+          : `已添加「${entry.name}」（${externalManager.size}/${MAX_EXTERNAL_CHARACTERS}）并激活，点身体拖整人`, false);
+      } else {
+        console.log(`[3D导演台] 默认 3D角色已自动加载（${entry.name}）`);
       }
+      return entry;
     } catch (e) {
       console.error("GLB加载失败:", e);
-      showToast("3D角色加载失败：" + (e.message || e), true);
-      glbBtn.disabled = false;
-      glbBtn.textContent = "🔄3D角色";
+      if (!silent) showToast("3D角色加载失败：" + (e.message || e), true);
+      updateExtButtonsUI();
+      return null;
+    } finally {
+      addExtBtn.disabled = false;
+      addExtBtn.textContent = prevBtnText;
+      updateExtButtonsUI();
     }
-  });
+  }
 
-  // ── VRM 角色数据（回调见下方 _onVRMLoad 注册处）──
-  let vrmData = null;
-  let vrmLoaded = false;
+  addExtBtn.addEventListener("click", () => loadMoreGLB());
+  // P3-1：面板内添加入口（external-char-panel 头部 ➕ 按钮调用）
+  window.__dsAddExternalCharacter = () => loadMoreGLB();
+
+  // ── P3-0：默认 3D角色工作流 —— 启动后自动加载默认 UE GLB（静默/低打扰）──
+  // 若 init/工程导入带 externalCharacters 快照，则由恢复路径负责，跳过自动加载。
+  setTimeout(() => {
+    if (externalManager.size > 0 || externalManager._restorePending) return;
+    if (window.__ds_externalRestored) return;
+    loadMoreGLB("/director_stage/models/michelle.glb", { silent: true })
+      .catch((e) => console.warn("[3D导演台] 默认 3D角色自动加载失败（保持火柴人模式）:", e?.message || e));
+  }, 800);
 
   // ── M2 独有：线框模式 ──
   const wireLabel = document.createElement("label");
@@ -665,7 +676,28 @@ function injectTopbarControls() {
     window.__ds?.pasteFromClipboard?.();
   });
 
+  // ── P1-A：渲染模式指示/切换（auto → webgl → canvas2d 循环）──
+  const modeBtn = document.createElement("button");
+  modeBtn.id = "btnRenderMode";
+  modeBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  refreshModeBtnUI = () => {
+    const eff = renderMode.getRenderMode();
+    const pref = renderMode.getRenderModePreference();
+    modeBtn.textContent = eff === "webgl" ? "🖥️WebGL" : "🟦Canvas2D";
+    modeBtn.title = `渲染模式：${pref}（当前 ${eff}）— 点击切换 auto/webgl/canvas2d；URL 加 ?force2d=1 可强制 2D`;
+  };
+  refreshModeBtnUI();
+  modeBtn.addEventListener("click", () => {
+    const order = ["auto", "webgl", "canvas2d"];
+    const cur = renderMode.getRenderModePreference();
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    const eff = renderMode.setRenderMode(next);
+    refreshModeBtnUI();
+    showToast(`渲染模式：${next}（当前 ${eff === "webgl" ? "WebGL" : "Canvas 2D"}）`, false);
+  });
+
   // Insert all after btnCancel
+  afterBtn.insertAdjacentElement("afterend", modeBtn);
   afterBtn.insertAdjacentElement("afterend", pasteBtn);
   afterBtn.insertAdjacentElement("afterend", copyBtn);
   afterBtn.insertAdjacentElement("afterend", importProjBtn);
@@ -678,10 +710,8 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", hidePropsLabel);
   afterBtn.insertAdjacentElement("afterend", gridLabel);
   afterBtn.insertAdjacentElement("afterend", wireLabel);
-  afterBtn.insertAdjacentElement("afterend", lockLabel);
-  afterBtn.insertAdjacentElement("afterend", ikLabel);
-  afterBtn.insertAdjacentElement("afterend", wholeBodyLabel);
-  afterBtn.insertAdjacentElement("afterend", glbBtn);
+  afterBtn.insertAdjacentElement("afterend", addExtBtn);
+  afterBtn.insertAdjacentElement("afterend", skeletonLabel);
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
 
@@ -692,11 +722,11 @@ function injectTopbarControls() {
   cameraSettings.bindUI(focalSlider, focalLabel, thirdsCheckbox);
 
   document.getElementById("hint").textContent =
-    "左键选关节拖动 | 右键旋转视角 | 滚轮缩放 | 🦴IK=骨骼摆姿 | Ctrl+1~9切机位";
+    "拖 IK 球摆姿势 | 点身体拖整人（Alt=升降） | 空白拖动转视角 | 1~9 切换角色 | Ctrl+1~9 切机位";
 
   if (!window.DS_FigureAPI) {
     document.getElementById("hint").textContent =
-      "左键选关节拖动 / 空白处拖动转视角 / 右键平移 / 滚轮缩放";
+      "拖 IK 球摆姿势 / 点身体拖整人（Alt=升降） / 空白处拖动转视角 / 右键平移 / 滚轮缩放";
   }
 }
 
@@ -717,6 +747,9 @@ function _updatePovButton(btn) {
 }
 
 injectTopbarControls();
+
+// P3-2：骨骼编辑 UI（IK/骨骼模式切换 + Gizmo 模式 + 高级平移，挂载到顶栏右侧）
+boneEditor.mountUI();
 
 /* ========================= 构图叠加层 ========================= */
 
@@ -742,20 +775,126 @@ window.addEventListener("ds-project-loaded", () => {
 
 /* ========================= postMessage 协议 ========================= */
 
-setupProtocol((w, h, jointsArr) => {
+function restoreCharactersFromSnapshot(characters, activeCharId) {
+  const api = window.DS_FigureAPI;
+  const manager = api?.getManager?.();
+  if (!api || !manager || !Array.isArray(characters) || characters.length === 0) return false;
+
+  // 清空当前默认场景，再按快照逐个重建
+  for (const id of Array.from(manager.characters.keys())) {
+    manager.remove(id);
+  }
+
+  for (const charData of characters) {
+    const char = manager.create(charData.id, charData.name, charData.color);
+    if (!char) continue;
+    char.visible = charData.visible !== false;
+    if (charData.position && char.skeletonGroup) {
+      char.skeletonGroup.position.fromArray(charData.position);
+    }
+
+    if (Array.isArray(charData.joints) && charData.joints.length >= 18) {
+      manager.setActive(char.id);
+      api.applyPoseToActive(charData.joints);
+    }
+
+    if (charData.ikTargets && char.ikState) {
+      for (const [chainName, ikPos] of Object.entries(charData.ikTargets)) {
+        const state = char.ikState[chainName];
+        if (!state) continue;
+        if (Array.isArray(ikPos.target)) state.target.position.fromArray(ikPos.target);
+        if (Array.isArray(ikPos.pole)) state.pole.position.fromArray(ikPos.pole);
+      }
+    }
+  }
+
+  const fallbackActive = manager.characters.keys().next().value;
+  manager.setActive(manager.characters.has(activeCharId) ? activeCharId : fallbackActive);
+  manager._footPinInitialized = false;
+  manager._updateVisibility?.();
+  return manager.characters.size > 0;
+}
+
+function applySceneSnapshot(sceneData) {
+  if (!sceneData || typeof sceneData !== "object") return false;
+  let restored = false;
+
+  if (Array.isArray(sceneData.cameras) && sceneData.cameras.length > 0) {
+    const [ew, eh] = getExportWH();
+    cameraManager.deserialize(sceneData.cameras, ew / eh);
+    restored = true;
+  }
+
+  if (Array.isArray(sceneData.props)) {
+    propManager.restore(sceneData.props, true);
+    restored = true;
+  }
+
+  const savedSceneSettings = sceneData.sceneSettings || sceneData.scene;
+  if (savedSceneSettings) {
+    setSceneSettings(savedSceneSettings);
+    restored = true;
+  }
+
+  if (sceneData.focalLength !== undefined) {
+    cameraSettings.setFocalLength(sceneData.focalLength);
+    restored = true;
+  }
+
+  if (restored) {
+    syncActiveCamera();
+    refreshAllPanels();
+    cameraSettings.updateOverlay();
+  }
+  return restored;
+}
+
+setupProtocol((w, h, jointsArr, sceneData, decodedScene) => {
   setExportSize(w, h);
   applyViewport(viewportEl);
   cameraManager.updateAspect(w / h);
   defaultCamera.aspect = w / h;
   defaultCamera.updateProjectionMatrix();
 
-  if (jointsArr) {
+  let charsRestored = false;
+  if (sceneData?.characters?.length) {
+    charsRestored = restoreCharactersFromSnapshot(sceneData.characters, sceneData.activeCharId);
+  } else if (decodedScene?.v >= 2 && decodedScene.characters?.length) {
+    const manager = window.DS_FigureAPI?.getManager?.();
+    charsRestored = manager ? applyDecodedToManager(manager, decodedScene) : false;
+  }
+
+  if (!charsRestored && jointsArr) {
     const curJointMeshes = _dsRef.joints;
     sApplyJoints(curJointMeshes, jointsArr);
     if (window.DS_FigureAPI?.applySpheresToBones) {
       window.DS_FigureAPI.applySpheresToBones();
     }
   }
+
+  applySceneSnapshot(sceneData);
+
+  // P1.5：恢复外部 3D角色（GLB/VRM，异步加载模型，不阻塞 init；旧 sceneJSON 无该字段则跳过）
+  if (Array.isArray(sceneData?.externalCharacters) && sceneData.externalCharacters.length > 0) {
+    window.__ds_externalRestored = true; // P3-0：阻止默认角色自动加载竞争
+    externalManager.restore({
+      characters: sceneData.externalCharacters,
+      activeCharacterId: sceneData.activeExternalCharacterId || null,
+    }).then((ok) => {
+      if (ok) {
+        window.__dsSetCharacterMode?.(externalManager.getActive()?.type || "glb");
+        refreshAllPanels();
+        console.log(`[3D导演台] 已恢复 ${externalManager.size} 个外部 3D角色`);
+      }
+    }).catch((e) => console.warn("[3D导演台] 外部角色恢复失败:", e));
+  }
+
+  // P3-2：恢复姿态预设（在 characters 恢复之后）
+  if (Array.isArray(sceneData?.posePresets) && sceneData.posePresets.length > 0) {
+    restorePosePresets(sceneData.posePresets);
+    console.log(`[3D导演台] 已恢复 ${sceneData.posePresets.length} 个姿态预设`);
+  }
+
   updateBones(_dsRef.joints, _dsRef.bones);
   cameraSettings.updateOverlay();
   updateStatus();
@@ -770,10 +909,10 @@ async function onApply() {
   btnApply.disabled = true;
   btnCancel.disabled = true;
   setStatus("正在导出并上传…", statusEl);
+  skeletonHelpers.beginExport(); // P3-0：骨骼线不混入 depth/normal/preview/mask 通道
   try {
     const [ew, eh] = getExportWH();
-    const curJoints = _dsRef.joints;
-    const sceneGz = encodeSceneGz(curJoints, cameraSettings.getFocalLength());
+    const sceneGz = encodeCurrentSceneGz();
 
     // M2: batch export across all cameras
     const enabledPasses = new Set(["openpose", "depth", "normal", "lineart", "preview"]);
@@ -786,6 +925,8 @@ async function onApply() {
     if (cameraManager.cameras.length > 1 || characters.length > 0) {
       // Multi-camera or multi-character: batch export
       showProgress("导出中…");
+      // P3-2：导出前隐藏骨骼标记/Gizmo
+      boneEditor.beginExport();
       const result = await performBatchExport({
         cameraManager,
         propManager,
@@ -798,6 +939,8 @@ async function onApply() {
         characters,
       });
       hideProgress();
+      // P3-2：导出后恢复骨骼标记/Gizmo
+      boneEditor.endExport();
 
       // Post manifest
       window.parent.postMessage(
@@ -806,7 +949,7 @@ async function onApply() {
       );
     } else {
       // Single camera, single character: use M1-compatible export
-      await performApply(joints, ew, eh, sceneGz);
+      await performApply(_dsRef.joints, ew, eh, sceneGz, { sceneJSON });
     }
 
     setStatus("✅ 已应用到节点", statusEl);
@@ -817,16 +960,37 @@ async function onApply() {
     showToast(`❌ 导出失败：${err.message || err}`, true);
   } finally {
     hideProgress();
+    skeletonHelpers.endExport();
     btnApply.disabled = false;
     btnCancel.disabled = false;
   }
 }
 
+function encodeCurrentSceneGz() {
+  const manager = window.DS_FigureAPI?.getManager?.();
+  const focal = cameraSettings.getFocalLength();
+  return manager ? encodeSceneGz(manager, focal) : encodeSceneGz(_dsRef.joints, focal);
+}
+
 function buildSceneJSON(sceneGz) {
+  let data = {};
+  try {
+    data = collectSceneData() || {};
+  } catch (err) {
+    console.warn("[3D导演台] sceneJSON 收集失败，使用最小快照:", err);
+  }
+
+  // 隐藏 widget 不适合存缩略图 dataUrl；重新打开后缩略图会按需重新生成
+  const cameras = Array.isArray(data.cameras)
+    ? data.cameras.map(({ dataUrl, ...cam }) => cam)
+    : cameraManager.serialize().map(({ dataUrl, ...cam }) => cam);
+
   return {
+    ...data,
     version: 2,
-    cameras: cameraManager.serialize(),
-    props: propManager.snapshot(),
+    cameras,
+    props: Array.isArray(data.props) ? data.props : propManager.snapshot(),
+    posePresets: serializePosePresets(),
     focalLength: cameraSettings.getFocalLength(),
     sceneGz,
   };
@@ -871,6 +1035,55 @@ const _dsRef = {
   get propManager() { return propManager; },
   __tctrl: tctrl,      // 模块作用域的 tctrl 引用
 
+  // P1-A/B 渲染模式契约
+  get renderMode() { return renderMode.getRenderMode(); },               // 当前实际模式："webgl" | "canvas2d"
+  get renderModePreference() { return renderMode.getRenderModePreference(); }, // 请求模式：auto/webgl/canvas2d
+  setRenderMode: (mode) => renderMode.setRenderMode(mode),               // 返回实际生效模式
+  setCharacterMode: (mode) => window.__dsSetCharacterMode?.(mode),       // stick | glb | vrm
+
+  // P1.5 外部角色契约：glbData/vrmData 动态指向活动 GLB/VRM entry；
+  // isGLBMode/isVRMMode/characterMode 读取模块级 characterMode（getter 只读，禁止外部赋值）
+  get externalCharacters() { return externalManager; },
+  // P3-0：动作/骨骼契约
+  get actionRuntime() { return actionRuntime; },
+  get skeletonHelpers() { return skeletonHelpers; },
+  get skeletonVisible() { return skeletonHelpers.enabled; },
+  setSkeletonVisible: (v) => skeletonHelpers.setEnabled(v),
+  // P3-2：骨骼编辑契约
+  get boneEditor() { return boneEditor; },
+  // P3-1：3D角色整体移动契约
+  get externalBodyMover() { return bodyMover; },
+  moveExternalCharacter: (id, dx, dy, dz) => {
+    const entry = id ? externalManager.get(id) : externalManager.getActive();
+    return translateExternalCharacter(entry, +dx || 0, +dy || 0, +dz || 0);
+  },
+  playAction: (entryId, actionId, opts) => actionRuntime.play(entryId, actionId, opts),
+  pauseAction: (entryId) => actionRuntime.pause(entryId),
+  resumeAction: (entryId) => actionRuntime.resume(entryId),
+  toggleAction: (entryId, actionId) => actionRuntime.toggle(entryId, actionId),
+  getActionState: (entryId) => {
+    const s = actionRuntime.getState(entryId);
+    return s ? { ...s } : null;
+  },
+  stopAllActions: () => actionRuntime.stopAll(),
+  get glbData() { return externalManager.getActiveOfType("glb"); },
+  get vrmData() { return externalManager.getActiveOfType("vrm"); },
+  get isGLBMode() { return characterMode === "glb"; },
+  get isVRMMode() { return characterMode === "vrm"; },
+  get characterMode() { return characterMode; },
+  // 活动外部角色的 COCO-18 关节世界坐标（兼容旧 _glbJointRef 测试钩子）
+  _glbJointRef: () => {
+    const entry = externalManager.getActiveOfType("glb") || externalManager.getActive();
+    if (!entry || !entry.jointMap) return [];
+    const getJoints = entry.type === "vrm" ? getVRMJointPositions : getGLBJointPositions;
+    return getJoints(entry.jointMap).map((p, idx) => {
+      const m = new THREE.Mesh();
+      m.position.set(p[0], p[1], p[2]);
+      m.userData = { index: idx };
+      return m;
+    });
+  },
+
   // M1 compat
   renderOpenPoseCanvas: (w, h) => renderOpenPoseCanvas(_dsRef.joints, defaultCamera, w, h),
   renderDepthCanvas: (w, h) => {
@@ -902,16 +1115,21 @@ const _dsRef = {
     return cv;
   },
 
-  encodeSceneGz: (fl) => encodeSceneGz(_dsRef.joints, fl || cameraSettings.getFocalLength()),
+  encodeSceneGz: (fl) => encodeCurrentSceneGz(),
   decodeSceneGz: (b64) => {
     const result = decodeSceneGz(b64);
     if (result) {
-      const curJoints = _dsRef.joints;
-      sApplyJoints(curJoints, result.joints);
+      if (result.v >= 2 && result.characters?.length) {
+        const manager = window.DS_FigureAPI?.getManager?.();
+        if (manager) applyDecodedToManager(manager, result);
+      } else if (result.joints) {
+        const curJoints = _dsRef.joints;
+        sApplyJoints(curJoints, result.joints);
+      }
       if (result.focalLength !== undefined) {
         cameraSettings.setFocalLength(result.focalLength);
       }
-      updateBones(curJoints, _dsRef.bones);
+      updateBones(_dsRef.joints, _dsRef.bones);
       return result;
     }
     return null;
@@ -975,25 +1193,44 @@ const _dsRef = {
   getPropCount: () => propManager.props.length,
   clearProps: () => { propManager.clear(); propsPanelUI.refreshList(); },
 
-  getSceneJSON: () => buildSceneJSON(encodeSceneGz(_dsRef.joints, cameraSettings.getFocalLength())),
+  getSceneJSON: () => buildSceneJSON(encodeCurrentSceneGz()),
 
-  // Batch export
-  performBatchExport: (enabledPasses) => performBatchExport({
-    cameraManager,
-    propManager,
-    get joints() { return _dsRef.joints; },
-    getSceneGz: () => encodeSceneGz(_dsRef.joints, cameraSettings.getFocalLength()),
-    exportW: getExportWH()[0],
-    exportH: getExportWH()[1],
-    enabledPasses: new Set(enabledPasses || ["openpose", "depth", "normal", "lineart", "preview"]),
-    onProgress: () => {},
-    characters: getCharacterGroups(),
-  }),
+  // Batch export（P3-0：包装隐藏骨骼线，避免混入 3D 通道）
+  performBatchExport: async (enabledPasses) => {
+    skeletonHelpers.beginExport();
+    try {
+      return await performBatchExport({
+        cameraManager,
+        propManager,
+        get joints() { return _dsRef.joints; },
+        getSceneGz: () => encodeCurrentSceneGz(),
+        exportW: getExportWH()[0],
+        exportH: getExportWH()[1],
+        enabledPasses: new Set(enabledPasses || ["openpose", "depth", "normal", "lineart", "preview"]),
+        onProgress: () => {},
+        characters: getCharacterGroups(),
+      });
+    } finally {
+      skeletonHelpers.endExport();
+    }
+  },
 
   wireframeMode: (enabled) => setWireframeMode(enabled),
 };
 
+// P3-2：保存其他模块（如 pose-presets.js）在 main.js 之前注入的 __ds 属性
+const _prevDsModules = Object.assign({}, window.__ds || {});
+
 window.__ds = _dsRef;
+
+// 恢复被覆盖的模块注入属性（posePresets 等）
+if (_prevDsModules && _prevDsModules !== _dsRef) {
+  for (const key of Object.keys(_prevDsModules)) {
+    if (!(key in _dsRef) || _dsRef[key] === undefined) {
+      try { window.__ds[key] = _prevDsModules[key]; } catch (_) { /* readonly */ }
+    }
+  }
+}
 
 // === 挂载 ds_opt_a 提供的全局功能 ===
 mountCameraGlobals(orbit);     // window.__ds.togglePovMode
@@ -1004,15 +1241,11 @@ mountThumbnailCapture();       // window.__ds.captureActiveThumbnail
 window.__ds._onVRMLoad = async (url, fileName) => {
   try {
     showToast(`正在加载 VRM: ${fileName}…`, false);
-    vrmData = await loadVRMCharacter(url, scene);
-    vrmData.ikTargets = createVRMIKTargets(vrmData.jointMap);
-    vrmData.ikTargetsGroup = vrmData.ikTargets.group;
-    scene.add(vrmData.ikTargetsGroup);
-    figureGroup.visible = false;
-    window.__ds.vrmData = vrmData;
-    window.__ds.isVRMMode = true;
-    vrmLoaded = true;
-    showToast(`VRM 已加载：${fileName}（拖手脚球摆姿势）`, false);
+    const entry = await externalManager.addVRM(url, undefined, fileName);
+    if (!entry) throw new Error(`外部角色已达上限（${MAX_EXTERNAL_CHARACTERS}）`);
+    externalManager.setActive(entry.id);
+    window.__dsSetCharacterMode?.("vrm");
+    showToast(`VRM 已加载：${fileName}（拖手脚 IK 球摆姿势）`, false);
   } catch (e) {
     console.error("VRM加载失败:", e);
     showToast("VRM加载失败：" + (e.message || e), true);
@@ -1030,18 +1263,18 @@ function solveGLB_IK(data) {
   if (!jointMap || !ikTargets) return;
 
   // 脚钉地
-  if (!glbData._rootPrev) {
+  if (!data._rootPrev) {
     const rootBone = jointMap.get(1); // Neck
     if (rootBone) {
-      glbData._rootPrev = new THREE.Vector3();
-      rootBone.getWorldPosition(glbData._rootPrev);
+      data._rootPrev = new THREE.Vector3();
+      rootBone.getWorldPosition(data._rootPrev);
     }
   } else {
     const rootBone = jointMap.get(1);
     if (rootBone) {
       const nowPos = new THREE.Vector3();
       rootBone.getWorldPosition(nowPos);
-      const delta = nowPos.clone().sub(glbData._rootPrev);
+      const delta = nowPos.clone().sub(data._rootPrev);
       if (delta.length() > 0.001) {
         for (const leg of ["rightLeg", "leftLeg"]) {
           if (ikTargets[leg]) {
@@ -1050,7 +1283,7 @@ function solveGLB_IK(data) {
           }
         }
       }
-      glbData._rootPrev.copy(nowPos);
+      data._rootPrev.copy(nowPos);
     }
   }
 
@@ -1147,18 +1380,18 @@ function solveVRM_IK(data) {
   if (!jointMap || !ikTargets) return;
 
   // 脚钉地（与 GLB 逻辑一致）
-  if (!vrmData._rootPrev) {
+  if (!data._rootPrev) {
     const rootBone = jointMap.get(1); // Neck
     if (rootBone) {
-      vrmData._rootPrev = new THREE.Vector3();
-      rootBone.getWorldPosition(vrmData._rootPrev);
+      data._rootPrev = new THREE.Vector3();
+      rootBone.getWorldPosition(data._rootPrev);
     }
   } else {
     const rootBone = jointMap.get(1);
     if (rootBone) {
       const nowPos = new THREE.Vector3();
       rootBone.getWorldPosition(nowPos);
-      const delta = nowPos.clone().sub(vrmData._rootPrev);
+      const delta = nowPos.clone().sub(data._rootPrev);
       if (delta.length() > 0.001) {
         for (const leg of ["rightLeg", "leftLeg"]) {
           if (ikTargets[leg]) {
@@ -1167,7 +1400,7 @@ function solveVRM_IK(data) {
           }
         }
       }
-      vrmData._rootPrev.copy(nowPos);
+      data._rootPrev.copy(nowPos);
     }
   }
 
@@ -1192,7 +1425,12 @@ function solveVRM_IK(data) {
 }
 
 // 动画循环：2D Canvas 渲染（零 WebGL 依赖）
-function renderLoop() {
+let _lastFrameTs = 0;
+function renderLoop(ts) {
+  // P3-0：帧间隔（动作采样用），首帧/异常值保护
+  const dt = _lastFrameTs ? (ts - _lastFrameTs) / 1000 : 0.016;
+  _lastFrameTs = ts || performance.now();
+
   // 更新 OrbitControls 的相机（用于关节投影计算）
   orbit.update();
   // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
@@ -1205,16 +1443,51 @@ function renderLoop() {
   
   // FK模式更新骨骼
   updateBones(joints, bones);
+
+  // P3-1 3D-only：火柴人永久隐藏（防御性每帧压制——restore/setActive/导入等路径可能重新点亮）
+  figureGroup.visible = false;
+  const stickMgr = window.DS_FigureAPI?.getManager?.();
+  if (stickMgr) {
+    if (stickMgr.ikTargetsGroup) stickMgr.ikTargetsGroup.visible = false;
+    for (const ch of stickMgr.characters.values()) {
+      if (ch.skeletonGroup && ch.skeletonGroup.visible) ch.skeletonGroup.visible = false;
+    }
+  }
+  // P3-1：同步 3D角色身体拾取 proxy（整体移动的点选目标）
+  bodyMover.syncProxies();
+
+  // P3-2：骨骼编辑模式每帧更新（投影/标记/Gizmo 相机）
+  boneEditor.update();
+
+  // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
+  actionRuntime.tick(dt);
+  // P3-0：骨骼显示 —— 补齐/清理 SkeletonHelper 并同步可见性
+  skeletonHelpers.syncAll();
   
-  // 2D 绘制
+  // 渲染主链路：WebGL 模式走真实 3D 渲染；失败当帧回退 2D；
+  // drawFrame 两种模式都调用——webgl 下内部仅填拾取缓存不绘制（2D canvas 作透明交互层）。
   const camRef = ac ? ac.camera : defaultCamera;
+  if (renderMode.isWebGL()) {
+    if (!renderViewportWebGL(camRef)) renderMode.fallbackTo2D("渲染帧异常");
+  }
   drawFrame(figureGroup, joints, camRef, window.__ds?.fkMode);
   
-  // 如果有GLB/VRM，同步骨骼（glbData/vrmData 是工具栏函数局部变量，必须走 window.__ds）
-  const _glb = window.__ds?.glbData;
-  if (_glb && _glb.jointMap && _glb.ikTargets) solveGLB_IK(_glb);
-  const _vrm = window.__ds?.vrmData;
-  if (_vrm && _vrm.jointMap && _vrm.ikTargets) solveVRM_IK(_vrm);
+  // P1.5b 性能优化：IK 不再全员每帧求解。
+  // - 活动角色：每帧解（拖拽 IK 球时必须实时）
+  // - 非活动角色：仅在 _ikDirty（添加/恢复/模式切换/激活）时补解一次
+  if (characterMode !== "stick") {
+    const activeId = externalManager.activeCharacterId;
+    for (const entry of externalManager.characters.values()) {
+      if (!entry.model || entry.model.visible === false || !entry.jointMap || !entry.ikTargets) continue;
+      // P3-2：骨骼编辑 applyPoseBones 后跳过几帧 IK，避免 solver 覆盖刚写入的骨骼
+      if (entry._skipIKFrames > 0) { entry._skipIKFrames--; continue; }
+      const mustSolve = entry.id === activeId || entry._ikDirty;
+      if (!mustSolve) continue;
+      if (entry.type === "vrm") solveVRM_IK(entry);
+      else solveGLB_IK(entry);
+      entry._ikDirty = false;
+    }
+  }
   
   requestAnimationFrame(renderLoop);
 }

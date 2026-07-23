@@ -78,14 +78,13 @@ export class PropManager {
     this.selectedProp = null;
     this._wireframe = null;
 
-    // TransformControls for prop manipulation
+    // 2D 编辑器：不再依赖 3D TransformControls 轴柄（在 2D canvas 里不可见且轴向容易错乱）
+    // 保留 tctrl 实例仅用于兼容旧 API；真正的 translate/rotate/scale 由下方 2D 拖拽接管
     this.tctrl = new TransformControls(camera, domElement);
     this.tctrl.setMode("translate");
     this.tctrl.setSize(0.65);
     this.tctrl.setTranslationSnap(0.25, 0.25, 0.25);
-    this.tctrl.addEventListener("dragging-changed", (e) => {
-      if (this._onDragChanged) this._onDragChanged(e.value);
-    });
+    this.tctrl.enabled = false;
     const gizmo = typeof this.tctrl.getHelper === "function"
       ? this.tctrl.getHelper() : this.tctrl;
     scene.add(gizmo);
@@ -94,10 +93,145 @@ export class PropManager {
     // Raycaster for prop picking
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
+
+    // 2D 拖拽状态
+    this._transformMode = "translate";
+    this._drag2d = null;
+    this._lastDragEndAt = 0;
+    this._setup2DDrag(domElement);
   }
 
   _ensureThreeImport() {
     // noop — TransformControls is already available via THREE
+  }
+
+  /** 2D 道具拖拽：默认地面 X/Z，Alt=垂直 Y；rotate/scale 模式也在 2D 中直接处理 */
+  _setup2DDrag(domElement) {
+    const ray = this._raycaster;
+    const ndc = this._ndc;
+    const hit = new THREE.Vector3();
+    const worldPos = new THREE.Vector3();
+    const camDir = new THREE.Vector3();
+
+    const ndcFromEvent = (e) => {
+      const r = domElement.getBoundingClientRect();
+      ndc.set(
+        ((e.clientX - r.left) / r.width) * 2 - 1,
+        -((e.clientY - r.top) / r.height) * 2 + 1
+      );
+      return ndc;
+    };
+
+    const snapValue = (v, enabled) => enabled ? Math.round(v / 0.25) * 0.25 : v;
+
+    domElement.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const entry = this.pickProp(ndcFromEvent(e));
+      if (!entry || entry.locked) return;
+
+      // 立即选中并开始拖，不需要先点一下选中、再拖第二次
+      this.selectProp(entry.id);
+      const cam = this.camera || window.__ds?.camera;
+      if (!cam) return;
+
+      entry.mesh.updateWorldMatrix(true, false);
+      entry.mesh.getWorldPosition(worldPos);
+
+      const mode = this._transformMode || "translate";
+      const drag = {
+        pointerId: e.pointerId,
+        entry,
+        mode,
+        axisY: mode === "translate" && e.altKey,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        startLocal: entry.mesh.position.clone(),
+        startRotY: entry.mesh.rotation.y,
+        startScale: entry.mesh.scale.clone(),
+        plane: new THREE.Plane(),
+        offset: new THREE.Vector3(),
+      };
+
+      if (mode === "translate") {
+        if (drag.axisY) {
+          // 垂直升降：用面向相机但竖直的平面，只取 Y 变化
+          cam.getWorldDirection(camDir);
+          camDir.y = 0;
+          if (camDir.lengthSq() < 1e-8) camDir.set(0, 0, 1);
+          camDir.normalize();
+          drag.plane.setFromNormalAndCoplanarPoint(camDir, worldPos);
+        } else {
+          // 默认：地面 X/Z 平面，避免屏幕上下被错误映射成只能 Y 轴上下
+          drag.plane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), worldPos);
+        }
+
+        ray.setFromCamera(ndcFromEvent(e), cam);
+        if (ray.ray.intersectPlane(drag.plane, hit)) {
+          drag.offset.copy(hit).sub(worldPos);
+        }
+      }
+
+      this._drag2d = drag;
+      if (this._onDragChanged) this._onDragChanged(true);
+      try { domElement.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    });
+
+    domElement.addEventListener("pointermove", (e) => {
+      const drag = this._drag2d;
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      const { entry, mode } = drag;
+      const mesh = entry.mesh;
+
+      if (mode === "rotate") {
+        const dx = e.clientX - drag.startClientX;
+        mesh.rotation.y = drag.startRotY + dx * 0.012;
+      } else if (mode === "scale") {
+        const dy = e.clientY - drag.startClientY;
+        const factor = Math.max(0.05, Math.min(20, Math.exp(-dy * 0.006)));
+        mesh.scale.copy(drag.startScale).multiplyScalar(factor);
+      } else {
+        const cam = this.camera || window.__ds?.camera;
+        if (!cam) return;
+        ray.setFromCamera(ndcFromEvent(e), cam);
+        if (!ray.ray.intersectPlane(drag.plane, hit)) return;
+
+        hit.sub(drag.offset);
+        const local = hit.clone();
+        if (mesh.parent) mesh.parent.worldToLocal(local);
+        const snapEnabled = window.__ds?.sceneSettings?.snapGrid !== false;
+
+        if (drag.axisY) {
+          // Alt：只升降，不横向漂移
+          local.x = drag.startLocal.x;
+          local.z = drag.startLocal.z;
+          local.y = snapValue(local.y, snapEnabled);
+        } else {
+          // 默认：只沿地面 X/Z，高度保持不变
+          local.y = drag.startLocal.y;
+          local.x = snapValue(local.x, snapEnabled);
+          local.z = snapValue(local.z, snapEnabled);
+        }
+        mesh.position.copy(local);
+      }
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    });
+
+    const endDrag = (e) => {
+      const drag = this._drag2d;
+      if (!drag || (e && e.pointerId !== drag.pointerId)) return;
+      this._drag2d = null;
+      this._lastDragEndAt = performance.now();
+      if (this._onDragChanged) this._onDragChanged(false);
+      try { domElement.releasePointerCapture(drag.pointerId); } catch (_) { /* ignore */ }
+    };
+
+    domElement.addEventListener("pointerup", endDrag);
+    domElement.addEventListener("pointercancel", endDrag);
+    domElement.addEventListener("pointerleave", endDrag);
   }
 
   /** 添加道具 */
@@ -186,11 +320,12 @@ export class PropManager {
     this._ndc.copy(pointerNdc);
     this._raycaster.setFromCamera(this._ndc, this.camera);
     const meshes = this.props.map((p) => p.mesh);
-    const hits = this._raycaster.intersectObjects(meshes, false);
+    const hits = this._raycaster.intersectObjects(meshes, true);
     if (hits.length > 0) {
-      const hitMesh = hits[0].object;
-      const propId = hitMesh.userData.propId;
-      return this.getProp(propId) || null;
+      let hitMesh = hits[0].object;
+      while (hitMesh && !hitMesh.userData.propId) hitMesh = hitMesh.parent;
+      const propId = hitMesh?.userData.propId;
+      return propId ? (this.getProp(propId) || null) : null;
     }
     return null;
   }
@@ -306,6 +441,9 @@ export class PropManager {
       // Use provided ID if preserving
       if (preserveIds && item.id) {
         mesh.userData.propId = item.id;
+        // 恢复后推进自增 ID，避免再次添加道具时与旧 ID 冲突
+        const idMatch = /^prop_(\d+)$/.exec(item.id);
+        if (idMatch) _nextId = Math.max(_nextId, parseInt(idMatch[1], 10) + 1);
         const bbox = new THREE.Box3().setFromObject(mesh);
         const size = new THREE.Vector3();
         bbox.getSize(size);
@@ -340,7 +478,8 @@ export class PropManager {
 
   /** 获取 TransformControls 拖拽状态 */
   isDragging() {
-    return this.tctrl.dragging;
+    // pointerup 同一事件内先清拖拽态，再让后续监听器判断；保留 80ms 窗口防止拖拽结束被当成空白点击
+    return !!this._drag2d || !!this.tctrl.dragging || (performance.now() - this._lastDragEndAt) < 80;
   }
 
   /** 隐藏/显示 gizmo（渲染 pass 前隐藏） */
@@ -350,7 +489,10 @@ export class PropManager {
 
   /** 变换模式切换 */
   setTransformMode(mode) {
+    this._transformMode = mode;
     this.tctrl.setMode(mode);
+    // 2D 模式下始终禁用 3D 轴柄，只切换自定义拖拽语义
+    this.tctrl.enabled = false;
   }
 }
 

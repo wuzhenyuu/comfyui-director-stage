@@ -55,20 +55,21 @@ export function setupProtocol(onInit) {
 
     let fl = undefined;
     let jointsArr = null;
+    let decodedScene = null;
 
     if (p.sceneGz) {
       try {
-        const decoded = decodeSceneGz(p.sceneGz);
-        if (decoded) {
-          if (decoded.focalLength !== undefined) fl = decoded.focalLength;
-          jointsArr = decoded.joints;
+        decodedScene = decodeSceneGz(p.sceneGz);
+        if (decodedScene) {
+          if (decodedScene.focalLength !== undefined) fl = decodedScene.focalLength;
+          jointsArr = decodedScene.joints;
         }
       } catch (err) {
         console.warn("[3D导演台] sceneGz 解析失败:", err);
       }
     }
 
-    onInit(w, h, jointsArr, sceneJSON);
+    onInit(w, h, jointsArr, sceneJSON, decodedScene);
 
     // 应用焦距
     if (fl !== undefined) setFocalLength(fl);
