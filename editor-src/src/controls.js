@@ -133,27 +133,10 @@ function jointsSnapshot() {
 
 /**
  * 契约 3：根据被拖对象确定所属角色
- * - IK target/pole 球：userData.characterId
- * - 普通关节球：查拾取缓存 __ds_jointScreen 的 charId
- * - 兜底：当前活动角色
+ * P2-fix：火柴人（DS_FigureAPI）已删除，3D-only 下恒为 null
  */
 function _resolveDragChar(obj) {
-  const api = window.DS_FigureAPI;
-  if (!api || !obj) return null;
-  let charId = obj.userData?.characterId || null;
-  if (!charId) {
-    const screen = window.__ds_jointScreen;
-    if (screen && screen.length) {
-      for (const s of screen) {
-        if (s.obj === obj) { charId = s.charId; break; }
-      }
-    }
-  }
-  if (charId && api.getAllCharacters) {
-    const ch = api.getAllCharacters().get(charId);
-    if (ch) return ch;
-  }
-  return api.getActiveCharacter ? api.getActiveCharacter() : null;
+  return null;
 }
 
 /** 契约 3：pointerdown 命中后自动激活对象所属角色 */
@@ -165,14 +148,6 @@ function _activateCharOfObj(obj) {
     if (mgr && mgr.activeCharacterId !== extId) {
       mgr.setActive(extId);
     }
-    return;
-  }
-  const api = window.DS_FigureAPI;
-  if (!api || !api.setActive) return;
-  const ch = _resolveDragChar(obj);
-  if (ch && ch.id && ch.id !== api.getActiveCharacter()?.id) {
-    api.setActive(ch.id);
-    updateCharPanelIfExists();
   }
 }
 
@@ -188,13 +163,8 @@ function onDragChanged(e) {
       return;
     }
 
-    // 拖动开始：压 undo 栈
-    const api = window.DS_FigureAPI;
-    if (api) {
-      pushUndo(null);  // undo.js 内部会处理多角色 snapshot
-    } else if (selected) {
-      pushUndo(window.__ds.joints);
-    }
+    // 拖动开始：压 undo 栈（undo.js 内部处理多角色快照）
+    pushUndo(null);
 
     // 契约 3：确定被拖角色
     dragChar = _resolveDragChar(selected);
@@ -314,11 +284,7 @@ function ndcFromEvent(e, domElement) {
  * IK 模式（勾选）：仅 IK targets/poles 可拾取
  */
 function getPickableObjects() {
-  const api = window.DS_FigureAPI;
-  const char = api ? api.getActiveCharacter() : null;
   const objects = [];
-
-  const fkMode = window.__ds?.fkMode;
 
   const externalGlbMode = !!window.__ds?.isGLBMode;
   const externalVrmMode = !!window.__ds?.isVRMMode;
@@ -360,18 +326,7 @@ function getPickableObjects() {
     return objects.filter((o) => o && o.visible !== false);
   }
 
-  if (char) {
-    if (fkMode) {
-      for (const state of Object.values(char.ikState)) {
-        objects.push(state.target, state.pole);
-      }
-    } else {
-      objects.push(...char.jointSpheres);
-    }
-  } else if (window.__ds?.joints) {
-    objects.push(...window.__ds.joints);
-  }
-
+  // P2-fix：火柴人（DS_FigureAPI）已删除，3D-only 下无其他可拾取对象
   return objects;
 }
 
@@ -438,12 +393,7 @@ export function setupPointerEvents(domElement) {
     }
 
     // 压 undo 栈（与 onDragChanged 起始逻辑一致）
-    const api = window.DS_FigureAPI;
-    if (api) {
-      pushUndo(null);
-    } else {
-      pushUndo(window.__ds.joints);
-    }
+    pushUndo(null);
 
     // 关节拖拽初始化（IK targets 不参与子树拖动/骨长锁定）
     if (!obj.userData.ikType) {
@@ -621,33 +571,14 @@ export function setupKeyboardShortcuts(onStateChange) {
         }
         return;
       }
-      const api = window.DS_FigureAPI;
-      if (!api) return;
-      const chars = Array.from(api.getAllCharacters().values());
-      if (idx < chars.length) {
-        e.preventDefault();
-        const targetId = chars[idx].id;
-        if (targetId !== api.getActiveCharacter()?.id) {
-          api.setActive(targetId);
-          // 切换 active 后 TransformControls detach old，不自动 attach new
-          if (selected) selectJoint(null);
-          updateCharPanelIfExists();
-        }
-      }
+      // P2-fix：火柴人（DS_FigureAPI）角色切换分支已删除
       return;
     }
 
     if (e.ctrlKey && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
       e.preventDefault();
-      const api = window.DS_FigureAPI;
-      if (api) {
-        if (performUndo(null)) {
-          if (onStateChange) onStateChange();
-        }
-      } else if (window.__ds?.joints) {
-        if (performUndo(window.__ds.joints)) {
-          if (onStateChange) onStateChange();
-        }
+      if (performUndo(null)) {
+        if (onStateChange) onStateChange();
       }
       updateOverlay();
       return;
@@ -661,15 +592,6 @@ export function setupKeyboardShortcuts(onStateChange) {
       return;
     }
   });
-}
-
-function updateCharPanelIfExists() {
-  const api = window.DS_FigureAPI;
-  if (!api) return;
-  // 触发 char-panel 更新（通过自定义事件）
-  window.dispatchEvent(new CustomEvent("ds-char-changed", {
-    detail: { activeId: api.getActiveCharacter()?.id }
-  }));
 }
 
 /* ==================== getters ==================== */
@@ -705,11 +627,6 @@ function _isObjectLocked(obj) {
   // 2. 通过 userData 查找所属角色
   const charId = obj.userData?.characterId;
   if (charId) {
-    const api = window.DS_FigureAPI;
-    if (api) {
-      const ch = api.getCharacter ? api.getCharacter(charId) : null;
-      if (ch && ch._locked) return true;
-    }
     if (_lockedMap.has(charId)) return true;
   }
 
@@ -739,19 +656,7 @@ function _isObjectLocked(obj) {
 export function setObjectLocked(id, locked) {
   if (!id) return;
 
-  // 1. 查角色
-  const api = window.DS_FigureAPI;
-  if (api && api.getCharacter) {
-    const ch = api.getCharacter(id);
-    if (ch) {
-      ch._locked = !!locked;
-      if (locked) _lockedMap.set(id, true);
-      else _lockedMap.delete(id);
-      return;
-    }
-  }
-
-  // 2. 查道具
+  // 1. 查道具（P2-fix：火柴人角色分支已删除）
   const pm = window.__ds?.propManager;
   if (pm) {
     const prop = pm.props.find((p) => p.id === id);
@@ -779,14 +684,7 @@ export function setObjectLocked(id, locked) {
 export function isObjectLocked(id) {
   if (!id) return false;
 
-  // 查角色
-  const api = window.DS_FigureAPI;
-  if (api && api.getCharacter) {
-    const ch = api.getCharacter(id);
-    if (ch) return ch._locked === true || _lockedMap.has(id);
-  }
-
-  // 查道具
+  // 查道具（P2-fix：火柴人角色分支已删除）
   const pm = window.__ds?.propManager;
   if (pm) {
     const prop = pm.props.find((p) => p.id === id);

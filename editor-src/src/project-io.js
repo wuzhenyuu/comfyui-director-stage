@@ -230,11 +230,8 @@ async function _doImport(file) {
 
     // 5) 恢复机位
     if (data.cameras && ds?.cameraManager) {
-      // 清除现有相机
-      while (ds.cameraManager.cameras.length > 0) {
-        ds.cameraManager.removeCamera(ds.cameraManager.cameras[0].id);
-      }
-      // 恢复相机
+      // deserialize 开头自带清空（this.cameras = []），原 while 循环因 removeCamera 的
+      // “至少保留 1 个相机”保护会死循环（P0-fix），直接删除
       if (ds.cameraManager.deserialize) {
         ds.cameraManager.deserialize(data.cameras);
       }

@@ -35,6 +35,7 @@
 import * as THREE from "three";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { selectJoint } from "./controls.js";
+import { pushUndo } from "./undo.js";
 
 /* ========================= 骨骼规范 key ========================= */
 
@@ -224,10 +225,14 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
   gizmo.addEventListener("dragging-changed", (e) => {
     const orbit = getOrbit?.();
     if (orbit) orbit.enabled = !e.value;
-    if (!e.value) _afterBoneChange(selectedBone); // 拖拽结束：全量同步
+    if (e.value) {
+      pushUndo(null); // P1-fix：拖拽开始压栈——骨骼编辑可 Ctrl+Z 回退
+    } else {
+      _afterBoneChange(selectedBone); // 拖拽结束：全量同步
+    }
   });
   gizmo.addEventListener("objectChange", () => {
-    // 拖拽中：实时保持 IK target / 投影一致
+    // 拖拽中：实时保持 IK target / 投影一致（rAF 节流 + 轻量同步，见 _liveSync）
     _liveSync();
   });
 
@@ -328,11 +333,12 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
   /**
    * 按当前骨骼刷新 IK target/pole（骨骼 → IK 方向同步）。
    * pole 放在当前肘/膝弯曲平面法向（bend normal）上，保证 CCD 首帧收敛零漂移。
-   * 作用于全部可见外部角色（多角色快照一致性）。
+   * 作用于全部可见外部角色（多角色快照一致性）；P2-fix：可传 onlyEntry 只同步单个角色。
    */
-  function syncIKFromBones() {
+  function syncIKFromBones(onlyEntry = null) {
     if (!manager?.characters) return;
-    for (const entry of manager.characters.values()) {
+    const entries = onlyEntry ? [onlyEntry] : manager.characters.values();
+    for (const entry of entries) {
       if (!entry?.ikTargets) continue;
       const map = _resolveAll(entry);
       for (const [chainName, def] of Object.entries(CHAIN_DEFS)) {
@@ -390,9 +396,23 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
     }));
   }
 
-  /** 拖拽中的轻量同步（同 _afterBoneChange，成本低，直接复用） */
+  /** P2-fix：拖拽中轻量同步——只同步活动角色 IK + 投影，每帧最多一次（rAF 节流）。
+   *  原实现每 mousemove 全量同步（全角色×4链 + 55骨投影 + 事件派发），多角色场景明显掉帧。
+   *  全量同步（含 dirty/事件）留给 dragging-changed(false)。 */
+  let _liveSyncQueued = false;
   function _liveSync() {
-    _afterBoneChange(selectedBone);
+    if (_liveSyncQueued) return;
+    _liveSyncQueued = true;
+    requestAnimationFrame(() => {
+      _liveSyncQueued = false;
+      const entry = _activeEntry();
+      if (entry) {
+        entry.allBones?.forEach?.((b) => b.updateMatrixWorld?.());
+        syncIKFromBones(entry);
+      }
+      skeletonHelpers?.syncAll?.();
+      _refreshProjection();
+    });
   }
 
   /* ========================= 模式切换 ========================= */
@@ -639,15 +659,17 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
   }
 
   /**
-   * 应用骨骼姿势到活动角色（只影响活动角色）。
+   * 应用骨骼姿势（只影响指定/活动角色）。
    * - 规范 key：按 key 匹配；position 仅应用到当前允许平移的骨骼
    * - 非规范 key（fallback 快照的原始骨骼名）：按骨骼名匹配；
    *   position 仅应用到顶层骨骼（parent 不是 Bone）
    * @param {object} bones
+   * @param {object} [opts] — { entry?: 指定角色（默认活动角色）, positions?: "all" 全部骨骼恢复 position（undo 用） }
    * @returns {boolean} 至少应用 1 根骨骼
    */
-  function applyPoseBones(bones) {
-    const entry = _activeEntry();
+  function applyPoseBones(bones, opts = {}) {
+    const entry = opts.entry || _activeEntry();
+    const allPos = opts.positions === "all";
     if (!entry || !bones || typeof bones !== "object") return false;
     const map = _resolveAll(entry);
     const all = (entry.allBones || []).filter((b) => b?.isBone);
@@ -656,11 +678,11 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
     for (const [key, rec] of Object.entries(bones)) {
       if (!rec) continue;
       let b = map.get(key) || null;
-      let allowPos = b ? isTranslateAllowed(key) : false;
+      let allowPos = b ? (allPos || isTranslateAllowed(key)) : false;
       if (!b) {
-        // 原始骨骼名路径（pose-presets fallback 快照）
+        // 原始骨骼名路径（pose-presets fallback 快照 / undo 快照）
         b = all.find((x) => x.name === key) || null;
-        allowPos = !!(b && !b.parent?.isBone);
+        allowPos = !!(b && (allPos || !b.parent?.isBone));
       }
       if (!b) continue;
       if (Array.isArray(rec.rotation) && rec.rotation.length >= 3) {

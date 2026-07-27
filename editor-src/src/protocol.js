@@ -42,7 +42,8 @@ export function setupProtocol(onInit) {
   if (!_parentOrigin) _parentOrigin = location.origin;
 
   window.addEventListener("message", (ev) => {
-    if (ev.origin !== location.origin) return;
+    // P2-fix：同源或已解析的父窗口 origin 才受理（原只校验同源，与 referrer 解析自相矛盾）
+    if (ev.origin !== location.origin && ev.origin !== _parentOrigin) return;
     const data = ev.data;
     if (!data || data.type !== "init") return;
     const p = data.payload || {};
@@ -93,4 +94,9 @@ export function announceReady() {
   // 暴露给 main.js 等其他模块使用
   if (window.__ds) window.__ds._protocolOrigin = origin;
   window.parent.postMessage({ type: "ready" }, origin);
+}
+
+/** 父窗口 origin（export.js 等发送 postMessage 时统一使用，禁止 "*" 通配） */
+export function getParentOrigin() {
+  return _parentOrigin || location.origin;
 }

@@ -68,6 +68,8 @@ function externalCharSnapshot() {
       name: entry.name,
       transform,
       ikTargets,
+      // P1-fix：骨骼姿势快照（骨骼编辑模式 Ctrl+Z 支持），按原始骨骼名记录
+      bones: _snapshotBones(entry),
     };
   }
   return {
@@ -75,6 +77,22 @@ function externalCharSnapshot() {
     chars,
     activeId: manager.getActive?.()?.id ?? manager.activeCharacterId ?? null,
   };
+}
+
+/**
+ * P1-fix：快照 entry 全部骨骼的局部旋转/位置（按骨骼名索引）
+ * @returns {Object<string,{rotation:number[],position:number[]}>}
+ */
+function _snapshotBones(entry) {
+  const bones = {};
+  for (const b of entry.allBones || []) {
+    if (!b?.isBone) continue;
+    bones[b.name] = {
+      rotation: [b.rotation.x, b.rotation.y, b.rotation.z],
+      position: [b.position.x, b.position.y, b.position.z],
+    };
+  }
+  return bones;
 }
 
 /**
@@ -108,6 +126,28 @@ function externalCharRestore(snap) {
       }
       entry._ikDirty = true; // 下一帧补解 IK
     }
+
+    // P1-fix：恢复骨骼姿势（最后执行——applyPoseBones 内含 syncIKFromBones，
+    // 会从骨骼重新推导 IK target，保证骨骼↔IK 一致）
+    if (charData.bones) {
+      const be = window.__ds?.boneEditor;
+      if (be?.applyPoseBones) {
+        try {
+          be.applyPoseBones(charData.bones, { entry, positions: "all" });
+        } catch (e) {
+          console.warn("[undo] 骨骼姿势恢复失败:", e);
+        }
+      } else {
+        // 兜底：boneEditor 未挂载时直接写回
+        for (const b of entry.allBones || []) {
+          const rec = charData.bones[b.name];
+          if (!rec) continue;
+          if (Array.isArray(rec.rotation)) b.rotation.set(+rec.rotation[0] || 0, +rec.rotation[1] || 0, +rec.rotation[2] || 0);
+          if (Array.isArray(rec.position)) b.position.set(+rec.position[0] || 0, +rec.position[1] || 0, +rec.position[2] || 0);
+        }
+        entry._skipIKFrames = 60;
+      }
+    }
   }
 
   // 恢复活动角色
@@ -117,46 +157,12 @@ function externalCharRestore(snap) {
 }
 
 /**
- * 获取全部角色完整快照（M2 多角色）
- * @returns {Object} { v:2, chars: { id: { joints, ikTargets } }, activeId }
+ * 获取全部角色完整快照
+ * P2-fix：火柴人（DS_FigureAPI）已删除，3D-only 恒走 ExternalCharacterManager v3 路径
+ * @returns {Object|null} { v:3, chars, activeId }
  */
 function multiCharSnapshot() {
-  const api = window.DS_FigureAPI;
-  if (!api || !api.getCharacterCount()) {
-    // 3D-only：DS_FigureAPI 不存在时走 ExternalCharacterManager 路径
-    return externalCharSnapshot();
-  }
-
-  const chars = {};
-  const allChars = api.getAllCharacters();
-  for (const [id, char] of allChars) {
-    const joints = [];
-    for (let i = 0; i < 18; i++) {
-      const sp = char.jointSpheres[i];
-      joints.push([sp.position.x, sp.position.y, sp.position.z]);
-    }
-    const ikTargets = {};
-    for (const [chainName, state] of Object.entries(char.ikState)) {
-      ikTargets[chainName] = {
-        target: [
-          state.target.position.x,
-          state.target.position.y,
-          state.target.position.z,
-        ],
-        pole: [
-          state.pole.position.x,
-          state.pole.position.y,
-          state.pole.position.z,
-        ],
-      };
-    }
-    chars[id] = { joints, ikTargets };
-  }
-  return {
-    v: 2,
-    chars,
-    activeId: api.getActiveCharacter()?.id,
-  };
+  return externalCharSnapshot();
 }
 
 /**
@@ -164,45 +170,11 @@ function multiCharSnapshot() {
  */
 function multiCharRestore(snap) {
   if (!snap || !snap.chars) return;
-  // 3D-only：v:3 快照走 ExternalCharacterManager 路径
   if (snap.v === 3) {
     externalCharRestore(snap);
     return;
   }
-  if (snap.v !== 2) return;
-  const api = window.DS_FigureAPI;
-  if (!api) return;
-
-  for (const [id, charData] of Object.entries(snap.chars)) {
-    const char = api.getCharacter(id);
-    if (!char) continue;
-
-    // 恢复关节球位置
-    if (charData.joints) {
-      for (let i = 0; i < 18 && i < charData.joints.length; i++) {
-        const p = charData.joints[i];
-        if (p && p.length >= 3) {
-          char.jointSpheres[i].position.set(p[0], p[1], p[2]);
-        }
-      }
-    }
-
-    // 恢复 IK targets 位置
-    if (charData.ikTargets) {
-      for (const [chainName, pos] of Object.entries(charData.ikTargets)) {
-        const state = char.ikState[chainName];
-        if (state) {
-          if (pos.target) state.target.position.set(pos.target[0], pos.target[1], pos.target[2]);
-          if (pos.pole) state.pole.position.set(pos.pole[0], pos.pole[1], pos.pole[2]);
-        }
-      }
-    }
-  }
-
-  // 恢复活动角色
-  if (snap.activeId) {
-    api.setActive(snap.activeId);
-  }
+  // P2-fix：v:2 火柴人快照格式已不支持（3D-only）
 }
 
 /**
@@ -214,10 +186,8 @@ function multiCharRestore(snap) {
  * @param {THREE.Mesh[]|null} joints
  */
 export function pushUndo(joints) {
-  const api = window.DS_FigureAPI;
-
-  // M2 多角色 或 3D-only 外部角色：自动快照
-  if (api || window.__ds?.externalCharacters) {
+  // 3D-only 外部角色：自动快照
+  if (window.__ds?.externalCharacters) {
     const snap = multiCharSnapshot();
     if (snap) {
       undoStack.push(snap);
@@ -244,10 +214,8 @@ export function performUndo(joints) {
   if (undoStack.length === 0) return false;
   const snap = undoStack.pop();
 
-  const api = window.DS_FigureAPI;
-
-  if ((api || window.__ds?.externalCharacters) && snap && (snap.v === 2 || snap.v === 3)) {
-    // M2/3D-only: 保存当前状态到 redo
+  if (window.__ds?.externalCharacters && snap && snap.v === 3) {
+    // 3D-only: 保存当前状态到 redo
     const cur = multiCharSnapshot();
     if (cur) redoStack.push(cur);
     multiCharRestore(snap);
@@ -282,9 +250,7 @@ export function performRedo(joints) {
   if (redoStack.length === 0) return false;
   const snap = redoStack.pop();
 
-  const api = window.DS_FigureAPI;
-
-  if ((api || window.__ds?.externalCharacters) && snap && (snap.v === 2 || snap.v === 3)) {
+  if (window.__ds?.externalCharacters && snap && snap.v === 3) {
     const cur = multiCharSnapshot();
     if (cur) undoStack.push(cur);
     multiCharRestore(snap);

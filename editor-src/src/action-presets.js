@@ -110,6 +110,11 @@ export function ensureRig(entry) {
 
   const m = entry.model;
   rig.anchor = new THREE.Vector3(m.position.x, 0, m.position.z);
+  // P1-fix（rig 缓存随动）：记录捕获时刻的模型变换。
+  // samplePose 每帧计算 delta（当前变换 vs 捕获变换），把缓存的世界坐标数据
+  // （home/anchor/shoulder 等）映射到当前帧，角色移动/旋转后动作不再"飞回"原位。
+  rig._capturePos = m.position.clone();
+  rig._captureQuat = m.quaternion.clone();
 
   // 初始 IK 姿势（= 站立基准）
   // 修复：从骨骼世界坐标推算 home，而非当前的 IK 球位置。
@@ -209,12 +214,14 @@ export function ensureRig(entry) {
   }
 
   // 手指骨骼（出拳握拳用，Mixamo 命名风格；不含指尖末节）
+  // P2-fix：兼容 VRM 命名（leftThumbProximal/Intermediate/Distal，无数字后缀）
+  const VRM_JOINT = { proximal: 1, intermediate: 2, distal: 3 };
   rig.fingers = { right: [], left: [] };
   for (const b of entry.allBones || []) {
-    const m = b?.name?.match(/(left|right).*?(thumb|index|middle|ring|pinky)_?(\d)/i);
+    const m = b?.name?.match(/(left|right).*?(thumb|index|middle|ring|pinky)(?:_?(\d)|(proximal|intermediate|distal))/i);
     if (!m) continue;
-    const joint = +m[3];
-    if (joint < 1 || joint > 3) continue; // 跳过指尖末节
+    const joint = m[3] ? +m[3] : VRM_JOINT[m[4].toLowerCase()];
+    if (!joint || joint < 1 || joint > 3) continue; // 跳过指尖末节
     const side = m[1].toLowerCase();
     if (side !== "right" && side !== "left") continue;
     rig.fingers[side].push({ bone: b, baseQuat: b.quaternion.clone(), joint, finger: m[2].toLowerCase() });
@@ -227,6 +234,27 @@ export function ensureRig(entry) {
 /** 角色移除/模型换装后调用，丢弃缓存的基准数据 */
 export function invalidateRig(entry) {
   if (entry) entry._rig = null;
+}
+
+/**
+ * P1-fix：每帧刷新 rig 的 delta 变换（捕获帧 → 当前帧）。
+ * 角色被 bodyMover 移动/旋转后，缓存的世界坐标数据通过该 delta 随动，
+ * 无需失效重捕（避免在动作播放中重捕到动作中间姿势污染 home）。
+ */
+export function updateRigFrame(entry) {
+  const rig = entry?._rig;
+  if (!rig || !entry.model) return null;
+  if (!rig._dq) {
+    rig._dq = new THREE.Quaternion();
+    rig._dp = new THREE.Vector3();
+    rig._captureQuatInv = rig._captureQuat
+      ? rig._captureQuat.clone().invert()
+      : new THREE.Quaternion();
+    if (!rig._capturePos) rig._capturePos = entry.model.position.clone();
+  }
+  rig._dq.copy(entry.model.quaternion).multiply(rig._captureQuatInv);
+  rig._dp.copy(entry.model.position).sub(rig._capturePos);
+  return rig;
 }
 
 /** 为 rig 分配/复用采样输出缓冲（避免每帧分配） */
@@ -253,6 +281,7 @@ function getSampleOut(rig) {
  */
 export function samplePose(entry, actionId, time, k = 1, out = null) {
   const rig = ensureRig(entry);
+  updateRigFrame(entry); // P1-fix：刷新 delta 变换
   out = out || getSampleOut(rig);
   k = Math.max(0, Math.min(1, k));
 
@@ -261,8 +290,10 @@ export function samplePose(entry, actionId, time, k = 1, out = null) {
     (name === "rightArm" || name === "leftArm") && rig.relaxed?.[name]
       ? rig.relaxed[name]
       : rig.home[name];
+  const written = (out._written = out._written || {});
   for (const name of CHAINS) {
     const base = baseOf(name);
+    written[name] = !!base;
     if (!base) continue;
     out.chains[name].target.copy(base.target);
     out.chains[name].pole.copy(base.pole);
@@ -432,7 +463,8 @@ export function samplePose(entry, actionId, time, k = 1, out = null) {
 
     /* ---------------- 一次性动作 ---------------- */
     case "jump": {
-      const D = 1.0;
+      // P2-fix：时长统一从动作定义读取（原与 ACTIONS.jump.duration 双写硬编码）
+      const D = getAction("jump")?.duration || 1.0;
       const p = Math.min(Math.max(time / D, 0), 1);
       let h = 0;      // 骨盆高度偏移
       let tuck = 0;   // 收腿系数（滞空期）
@@ -475,6 +507,18 @@ export function samplePose(entry, actionId, time, k = 1, out = null) {
     }
     out.pelvis.multiplyScalar(k);
     out.pelvisRot.slerp(_IDENTITY_QUAT, 1 - k); // k=0 时旋转归零
+  }
+
+  // P1-fix：把捕获帧的世界坐标输出映射到当前帧（模型平移/旋转随动）。
+  // 骨盆部分在 action-runtime._applySample 中处理（其 worldToLocal 用当前矩阵）。
+  if (rig._dq) {
+    for (const name of CHAINS) {
+      if (!written[name]) continue; // 未重写的链保留上帧值，不得重复叠加 delta
+      const c = out.chains[name];
+      if (!c) continue;
+      c.target.applyQuaternion(rig._dq).add(rig._dp);
+      c.pole.applyQuaternion(rig._dq).add(rig._dp);
+    }
   }
 
   return out;

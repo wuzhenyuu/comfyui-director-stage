@@ -30,16 +30,23 @@ export function parseOpenPoseImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
+    let objUrl = null;
     img.onload = () => {
       try {
-        resolve(detectJoints(img));
+        const joints = detectJoints(img);
+        if (objUrl) URL.revokeObjectURL(objUrl); // P2-fix：objectURL 用后释放
+        resolve(joints);
       } catch (e) {
+        if (objUrl) URL.revokeObjectURL(objUrl);
         reject(e);
       }
     };
-    img.onerror = () => reject(new Error("无法加载图片"));
+    img.onerror = () => {
+      if (objUrl) URL.revokeObjectURL(objUrl);
+      reject(new Error("无法加载图片"));
+    };
     if (typeof src === "string") img.src = src;
-    else img.src = URL.createObjectURL(src);
+    else { objUrl = URL.createObjectURL(src); img.src = objUrl; }
   });
 }
 

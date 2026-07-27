@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import { renderOpenPoseCanvas, renderOpenPoseCanvasMulti, renderDepthCanvas, renderNormalCanvas, renderLineartCanvas, renderCharacterMasks, renderPreviewCanvas } from "./pass-renderer.js";
 import { getCamera as getSceneCamera, getRenderer, getScene, getSceneHelpers } from "./scene.js";
+import { getParentOrigin } from "./protocol.js";
 
 function canvasToBlob(cv) {
   return new Promise((resolve, reject) => {
@@ -43,13 +44,10 @@ function getHiddenObjects(propManager) {
   // 保证 depth/normal/preview/mask 绝不混入隐藏火柴人。
   const ds = typeof window !== "undefined" ? window.__ds : null;
   if (ds?.figureGroup) hidden.push(ds.figureGroup);
-  const stickMgr = typeof window !== "undefined" ? window.DS_FigureAPI?.getManager?.() : null;
-  if (stickMgr) {
-    if (stickMgr.ikTargetsGroup) hidden.push(stickMgr.ikTargetsGroup);
-    for (const ch of stickMgr.characters?.values?.() || []) {
-      if (ch?.skeletonGroup) hidden.push(ch.skeletonGroup);
-    }
-  }
+  // P2-fix：DS_FigureAPI 火柴人管理器分支已删除（3D-only 下恒不存在）
+  // P2-4：全景球在所有通道隐藏（否则全景模式导出的是球内壁而非场景）
+  const sphere = ds?.panorama?.getSphere?.();
+  if (sphere) hidden.push(sphere);
   return hidden;
 }
 
@@ -132,13 +130,10 @@ export function extractExternalJoints(entry) {
   return joints;
 }
 
-function restoreHiddenObjects(propManager, hiddenObjects) {
-  // 恢复导出前被隐藏的场景辅助对象（grid/axes/火柴人骨架/IK 球组等）
-  if (Array.isArray(hiddenObjects)) {
-    for (const obj of hiddenObjects) {
-      if (obj && obj.visible === false) obj.visible = true;
-    }
-  }
+function restoreGizmo(propManager) {
+  // P1-fix：可见性恢复已全部交给 pass-renderer 内部的 was-restore（它记录先验状态，是对的）。
+  // 原 restoreHiddenObjects 无条件 obj.visible = true 会把用户手动隐藏的 grid/axes 强制点亮、
+  // 把 P3-1 要求永久隐藏的 figureGroup 点亮——与 pass-renderer 双重恢复且互相冲突，已删除。
   if (propManager) propManager.setGizmoVisible(true);
 }
 
@@ -329,20 +324,7 @@ export async function performBatchExport(opts) {
                 allJoints.push({ id: ch.id, joints: extractExternalJoints(ch.entry) });
                 return;
               }
-              // Get joints from DS_FigureAPI
-              if (window.DS_FigureAPI && window.DS_FigureAPI.getCharacterJoints) {
-                const jointData = window.DS_FigureAPI.getCharacterJoints(ch.id);
-                if (jointData) {
-                  const jointNames = ["Nose", "Neck", "RShoulder", "RElbow", "RWrist",
-                    "LShoulder", "LElbow", "LWrist", "RHip", "RKnee", "RAnkle",
-                    "LHip", "LKnee", "LAnkle", "REye", "LEye", "REar", "LEar"];
-                  const posArr = jointNames.map((n) => {
-                    const p = jointData[n];
-                    return p ? new THREE.Vector3(p[0], p[1], p[2]) : new THREE.Vector3();
-                  });
-                  allJoints.push({ id: ch.id, joints: posArr });
-                }
-              }
+              // P2-fix：火柴人（DS_FigureAPI）关节分支已删除（3D-only 不可达）
             });
             poseCv = renderOpenPoseCanvasMulti(allJoints, cam, exportW, exportH);
           } catch (e) {
@@ -395,7 +377,10 @@ export async function performBatchExport(opts) {
 
       // ─── Character Masks ───
       if (enabledPasses.has("mask") && characters.length > 0) {
-        const masks = renderCharacterMasks(scene, cam, renderer, exportW, exportH, characters, hiddenObjects);
+        // P1-fix：mask 通道额外隐藏道具——否则道具在每个角色 mask 里被渲染成白色块
+        const maskHidden = hiddenObjects.slice();
+        if (propManager?.getAllMeshes) maskHidden.push(...propManager.getAllMeshes());
+        const masks = renderCharacterMasks(scene, cam, renderer, exportW, exportH, characters, maskHidden);
         for (const [charId, maskCv] of Object.entries(masks)) {
           const filename = `director_mask_${charId}_${camEntry.id}_${t}.png`;
           const maskPath = await uploadCanvas(maskCv, filename);
@@ -414,7 +399,7 @@ export async function performBatchExport(opts) {
     }
 
   } finally {
-    restoreHiddenObjects(propManager, hiddenObjects);
+    restoreGizmo(propManager);
   }
 
   return { manifest, sceneGz };
@@ -488,30 +473,7 @@ export async function performApply(joints, exportW, exportH, sceneGz, extraPaylo
         ...(extraPayload || {}),
       },
     },
-    "*"
+    getParentOrigin() // P2-fix：不用 "*"，与 protocol.js 的安全姿态统一
   );
   return { manifest, sceneGz };
-}
-
-/**
- * 向后兼容：M1 的老 export 函数（避免破坏 __ds 钩子）
- */
-export function renderLegacyPoseCanvas(joints, w, h) {
-  const cam = getSceneCamera();
-  return renderOpenPoseCanvas(joints, cam, w, h);
-}
-
-export function renderLegacyDepthCanvas(joints, w, h) {
-  const scene = getScene();
-  const renderer = getRenderer();
-  if (!renderer) return null; // 无 WebGL：depth 通道不可用
-  const cam = getSceneCamera();
-  const { grid, axes } = getSceneHelpers();
-  const pg = grid.visible, pa = axes.visible;
-  grid.visible = false;
-  axes.visible = false;
-  const cv = renderDepthCanvas(scene, cam, renderer, w, h, []);
-  grid.visible = pg;
-  axes.visible = pa;
-  return cv;
 }

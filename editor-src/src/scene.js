@@ -238,10 +238,6 @@ export function getCanvasRect() {
   return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
 }
 
-export function mountRendererCanvas(viewportElem) {
-  mountRenderer(viewportElem);
-}
-
 export function getCharacterGroups() {
   const groups = [];
   if (!window.DS_FigureAPI) return groups;
@@ -254,10 +250,6 @@ export function getCharacterGroups() {
     }
   } catch (e) { /* ignore */ }
   return groups;
-}
-
-export function getAllSceneMeshObjects() {
-  return [];
 }
 
 /** 2D绘图：清屏+网格+火柴人+信标 */
@@ -764,5 +756,16 @@ function drawIKTargets(cameraRef, w, h) {
   }
 }
 
-/** 线框模式切换（2D模式无操作） */
-export function setWireframeMode() {}
+/**
+ * 线框模式切换（P2-fix：原为空函数=假功能；实现为遍历场景 mesh 切换 wireframe）
+ */
+export function setWireframeMode(enabled) {
+  if (!scene) return;
+  scene.traverse((child) => {
+    if (!(child.isMesh || child.isSkinnedMesh) || !child.material) return;
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const m of mats) {
+      if (m && "wireframe" in m) m.wireframe = !!enabled;
+    }
+  });
+}

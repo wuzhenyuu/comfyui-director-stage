@@ -236,6 +236,9 @@ export class ExternalCharacterManager {
       ikTargets: data.ikTargets,
       ikTargetsGroup: data.ikTargetsGroup,
       vrm: data.vrm || null,
+      // P2-fix：VRM 自带骨骼动画 + mixer（对齐 GLB 路径，clip 动作对 VRM 可用）
+      animations: data.animations ?? [],
+      mixer: (data.animations?.length ? new THREE.AnimationMixer(data.group) : null),
       visible: true,
       color: PALETTE[slot % PALETTE.length],
       spawnSlot: slot,

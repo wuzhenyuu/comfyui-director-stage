@@ -19,50 +19,10 @@ let clipboard = null;
  */
 function copyToClipboard() {
   try {
-    // 检查 ds_opt_a 是否提供了 figureAPI
-    const api = window.DS_FigureAPI;
     const pm = window.__ds?.propManager;
 
-    // 1) 复制角色（当前活动角色）
-    if (api) {
-      const char = api.getActiveCharacter();
-      if (char) {
-        // 深拷贝角色数据
-        const jointCoords = [];
-        for (let i = 0; i < 18; i++) {
-          const s = char.jointSpheres[i];
-          jointCoords.push([s.position.x, s.position.y, s.position.z]);
-        }
-
-        // IK targets
-        const ikData = {};
-        for (const [chainName, state] of Object.entries(char.ikState)) {
-          ikData[chainName] = {
-            target: state.target.position.toArray(),
-            pole: state.pole.position.toArray(),
-          };
-        }
-
-        clipboard = {
-          type: "character",
-          data: {
-            name: char.name,
-            color: char.color,
-            joints: jointCoords,
-            ikTargets: ikData,
-            // skeletonGroup 世界位置（作为角色根位置）
-            position: char.skeletonGroup.position.toArray(),
-          },
-        };
-
-        if (window.__ds?.showToast) {
-          window.__ds.showToast(`📋 已复制角色「${char.name}」`, false);
-        }
-        console.log("[剪贴板] 已复制角色", clipboard.data);
-        return;
-      }
-    } else {
-      // 3D-only 路径：DS_FigureAPI 不存在时，从 ExternalCharacterManager 取活动 3D 角色
+    // 1) 复制角色（P2-fix：火柴人分支已删除，3D-only 从 ExternalCharacterManager 取活动 3D 角色）
+    {
       const mgr = window.__ds?.externalCharacters;
       const entry = mgr?.getActive?.();
       if (entry && entry.model) {
@@ -151,66 +111,14 @@ function pasteFromClipboard() {
   }
 }
 
-/** 粘贴角色 */
+/** 粘贴角色（P2-fix：火柴人路径已删除，3D-only 仅支持外部角色拷贝） */
 function _pasteCharacter(data) {
-  const api = window.DS_FigureAPI;
   if (data?.external) {
     // 3D 外部角色拷贝：走 ExternalCharacterManager 异步加载路径
     _pasteExternalCharacter(data);
     return;
   }
-  if (!api) {
-    console.warn("[剪贴板] DS_FigureAPI 不可用");
-    return;
-  }
-
-  // 生成新 ID
-  const count = api.getAllCharacters().size;
-  const newId = `char_${String(count + 1).padStart(2, "0")}`;
-  const newName = `${data.name}_copy`;
-
-  // 创建新角色
-  const char = api.createCharacter(newId, newName, data.color);
-  if (!char) {
-    console.warn("[剪贴板] 创建角色失败");
-    return;
-  }
-
-  // 偏移位置：原位置 + 1m 偏移
-  const offsetPos = [
-    (data.position[0] || 0) + 1,
-    data.position[1] || 0,
-    (data.position[2] || 0) + 1,
-  ];
-  char.skeletonGroup.position.set(offsetPos[0], offsetPos[1], offsetPos[2]);
-
-  // 应用姿势
-  if (api.applyPoseToActive) {
-    api.setActive(newId);
-    api.applyPoseToActive(data.joints);
-  }
-
-  // 恢复 IK target 位置（应用偏移）
-  for (const [chainName, ikPos] of Object.entries(data.ikTargets)) {
-    const state = char.ikState[chainName];
-    if (state) {
-      state.target.position.set(
-        ikPos.target[0] + 1,
-        ikPos.target[1],
-        ikPos.target[2] + 1,
-      );
-      state.pole.position.set(
-        ikPos.pole[0] + 1,
-        ikPos.pole[1],
-        ikPos.pole[2] + 1,
-      );
-    }
-  }
-
-  if (window.__ds?.showToast) {
-    window.__ds.showToast(`📌 已粘贴角色「${newName}」`, false);
-  }
-  console.log("[剪贴板] 已粘贴角色", newId, newName);
+  console.warn("[剪贴板] 非 3D 角色拷贝，无法粘贴（火柴人已移除）");
 }
 
 /**

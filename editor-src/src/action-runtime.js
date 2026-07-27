@@ -12,7 +12,7 @@
  * 动作本身（target 位置）仍每帧推进，视觉上连续。
  */
 import * as THREE from "three";
-import { getAction, ensureRig, samplePose, isClipActionId, findClip, getClipActions } from "./action-presets.js";
+import { getAction, ensureRig, updateRigFrame, samplePose, isClipActionId, findClip, getClipActions } from "./action-presets.js";
 
 /** 动作切换混合时长（秒） */
 const BLEND_TIME = 0.28;
@@ -24,6 +24,7 @@ const _tmpSide = new THREE.Vector3();
 const _tmpQTarget = new THREE.Quaternion();
 const _tmpQFrom = new THREE.Quaternion();
 const _tmpQFist = new THREE.Quaternion();
+const _tmpBase = new THREE.Vector3();
 const _Z_AXIS = new THREE.Vector3(0, 0, 1);
 
 /**
@@ -32,6 +33,7 @@ const _Z_AXIS = new THREE.Vector3(0, 0, 1);
  */
 function syncIKFromBones(entry) {
   const rig = ensureRig(entry);
+  updateRigFrame(entry); // P1-fix：刷新 delta（旋转后 pole 侧向用当前帧 R）
   entry.model?.updateMatrixWorld?.(true);
   const ENDS = { rightArm: 4, leftArm: 7, rightLeg: 10, leftLeg: 13 };
   const MIDS = { rightArm: 3, leftArm: 6, rightLeg: 9, leftLeg: 12 };
@@ -44,6 +46,7 @@ function syncIKFromBones(entry) {
     if (midBone) {
       midBone.getWorldPosition(_tmpPole);
       _tmpSide.copy(rig.R);
+      if (rig._dq) _tmpSide.applyQuaternion(rig._dq); // P1-fix：当前帧右侧方向
       if (!name.startsWith("right")) _tmpSide.negate();
       t.pole.position.copy(_tmpPole).addScaledVector(_tmpSide, 0.15);
     }
@@ -60,6 +63,7 @@ function smoothstep(t) {
 
 /** 捕获 entry 当前 IK 姿势（混合起点） */
 function captureCurrentPose(entry, rig) {
+  updateRigFrame(entry); // P1-fix：确保 delta 是最新的
   const from = { chains: {}, pelvis: new THREE.Vector3(), pelvisWorldQuat: null };
   for (const [name, t] of Object.entries(entry.ikTargets || {})) {
     if (!t?.target || !t?.pole) continue;
@@ -69,7 +73,10 @@ function captureCurrentPose(entry, rig) {
     };
   }
   if (rig?.pelvis && rig.pelvisBaseWorld) {
-    rig.pelvis.getWorldPosition(from.pelvis).sub(rig.pelvisBaseWorld);
+    // P1-fix：pelvisBaseWorld 是捕获帧坐标，先映射到当前帧再求偏移
+    _tmpBase.copy(rig.pelvisBaseWorld);
+    if (rig._dq) _tmpBase.applyQuaternion(rig._dq).add(rig._dp);
+    rig.pelvis.getWorldPosition(from.pelvis).sub(_tmpBase);
     from.pelvisWorldQuat = rig.pelvis.getWorldQuaternion(new THREE.Quaternion());
   }
   return from;
@@ -218,8 +225,16 @@ export class ActionRuntime {
     if (!state || state.playing) return false;
     // P3-2：clip 恢复
     if (state.isClip) {
+      // P1-fix：restoreState 只写状态不建 _action，此时 resume 会空转——兑底重新播放
+      if (!state._action) {
+        const entry = this.manager.get(entryId);
+        if (entry) {
+          return this._playClip(entry, state.id, { speed: state.speed, intensity: state.intensity });
+        }
+        return false;
+      }
       state.playing = true;
-      if (state._action) state._action.paused = false;
+      state._action.paused = false;
       emitChanged();
       return true;
     }
@@ -372,8 +387,10 @@ export class ActionRuntime {
     // 骨盆世界偏移 → 骨骼本地坐标
     if (rig.pelvis && rig.pelvisBaseWorld && rig.pelvis.parent) {
       _tmpW.copy(rig.pelvisBaseWorld).add(out.pelvis);
+      if (rig._dq) _tmpW.applyQuaternion(rig._dq).add(rig._dp); // P1-fix：映射到当前帧
       if (blending) {
         _tmpFrom.copy(rig.pelvisBaseWorld).add(state.blendFrom.pelvis);
+        if (rig._dq) _tmpFrom.applyQuaternion(rig._dq).add(rig._dp);
         _tmpW.lerpVectors(_tmpFrom, _tmpW, b);
       }
       rig.pelvis.position.copy(rig.pelvis.parent.worldToLocal(_tmpW));

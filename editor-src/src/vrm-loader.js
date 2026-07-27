@@ -19,6 +19,7 @@ const VRM_TO_COCO = {
   // Head
   head:          0,   // Nose → head
   neck:          1,   // Neck
+  hips:          "rigRoot", // P1-fix：骨盆独立键（供脚钉地/骨盆查找，不占 COCO 1）
 
   // Right arm (VRM: rightUpperArm → rightLowerArm → rightHand)
   rightUpperArm: 2,   // RShoulder
@@ -71,7 +72,6 @@ const VRM_TO_COCO = {
 /**
  * COCO 索引 16/17 (R/L Ear) 没有精确对应骨骼，近似用 head
  */
-const EAR_FALLBACK = 0; // head bone index in VRM
 
 /**
  * 从 VRM humanoid bones 建立 COCO-18 映射
@@ -85,7 +85,7 @@ function buildJointMap(humanoid) {
   // VRM humanoid.getNormalizedBoneNode(boneName) 或 .getRawBoneNode(boneName)
   // 遍历 VRM 标准骨骼名
   const vrmBoneNames = [
-    "head", "neck",
+    "hips", "head", "neck",
     "rightUpperArm", "rightLowerArm", "rightHand",
     "leftUpperArm", "leftLowerArm", "leftHand",
     "rightUpperLeg", "rightLowerLeg", "rightFoot",
@@ -192,6 +192,13 @@ export async function loadVRMCharacter(url, scene) {
     throw new Error("VRM 数据解析失败：未找到 userData.vrm");
   }
 
+  // P2-fix：humanoid 校验上移到 scene.add 之前——原顺序校验失败时模型已进场景，
+  // 留下无 entry 引用、无法回收的孤儿模型
+  const humanoid = vrmInstance.humanoid;
+  if (!humanoid) {
+    throw new Error("VRM 文件缺少 humanoid 骨骼定义");
+  }
+
   const vrmModel = gltf.scene;
 
   // 缩放到标准身高 1.8m
@@ -210,12 +217,6 @@ export async function loadVRMCharacter(url, scene) {
 
   scene.add(vrmModel);
 
-  // 提取 humanoid 骨骼映射
-  const humanoid = vrmInstance.humanoid;
-  if (!humanoid) {
-    throw new Error("VRM 文件缺少 humanoid 骨骼定义");
-  }
-
   const { jointMap, allBones } = buildJointMap(humanoid);
 
   // 创建 IK 目标
@@ -229,6 +230,8 @@ export async function loadVRMCharacter(url, scene) {
     allBones,
     vrm: vrmInstance,
     skeleton: findSkeleton(vrmModel),
+    // P2-fix：透传 VRM 自带骨骼动画（原未透传，clip 动作对 VRM 恒不可用）
+    animations: gltf.animations ?? [],
   };
 }
 

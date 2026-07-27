@@ -6,19 +6,17 @@ import * as THREE from "three";
 import { T_POSE } from "./constants.js";
 import { createRenderer, createScene, createCamera, mountRenderer, getCamera, getRenderer, getScene, getCharacterGroups, setWireframeMode, drawFrame, renderViewportWebGL } from "./scene.js";
 import * as renderMode from "./render-mode.js";
-import { createJoints, createBones, updateBones } from "./figure.js";
 import { createExternalBodyMover, translateExternalCharacter } from "./external-character-move.js";
 import { createOrbit, createTransform, selectJoint, getSelected, setupPointerEvents, setupKeyboardShortcuts, getOrbit, getTransform, isBoneLockEnabled, setBoneLockEnabled, setExternalBodyMover } from "./controls.js";
 import { pushUndo, performUndo, performRedo, getUndoDepth, getRedoDepth, snapshot, restore } from "./undo.js";
-import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints, applyDecodedToManager } from "./serialization.js";
+import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints } from "./serialization.js";
 import * as cameraSettings from "./camera-settings.js";
 import { performApply, performBatchExport, extractExternalJoints } from "./export.js";
 import { renderOpenPoseCanvas, renderDepthCanvas, renderNormalCanvas } from "./pass-renderer.js";
-import { setupProtocol, announceReady, getExportSize, getSceneJSON, setSceneJSON } from "./protocol.js";
-import { mirrorPose } from "./pose-panel.js";
+import { setupProtocol, announceReady, setSceneJSON } from "./protocol.js";
 import { applyViewport, setExportSize, getExportWH, setStatus, showToast, showProgress, hideProgress } from "./ui.js";
 import { CameraManager, focalMMToVFov, renderCameraListEntry } from "./cameras.js";
-import { PropManager } from "./props.js";
+import { PropManager, PrimitiveFactory } from "./props.js";
 import { createPropsPanel } from "./props-panel.js";
 import { createGLBImport } from "./glb-import.js";
 import { createModelLibraryPanel } from "./model-library.js";
@@ -114,9 +112,9 @@ const figureGroup = new THREE.Group();
 figureGroup.name = "figure_group";
 figureGroup.visible = false; // P3-1 3D-only：火柴人永不显示（renderLoop 每帧防御性压制）
 scene.add(figureGroup);
-const joints = createJoints(figureGroup);
-const bones = createBones(figureGroup);
-updateBones(joints, bones);
+// P2-fix：figure.js 空壳已删除——joints/bones 恒为空数组（原 createJoints/createBones 返回 []）
+const joints = [];
+const bones = [];
 
 /* ========================= PropManager ========================= */
 
@@ -184,7 +182,6 @@ const boneEditor = createBoneEditor({
 
 setupPointerEvents(viewportCanvas, joints);
 setupKeyboardShortcuts(joints, () => {
-  updateBones(joints, bones);
   updateStatus();
 });
 
@@ -424,7 +421,6 @@ function injectTopbarControls() {
       defaultCamera.fov = ac.camera.fov;
       defaultCamera.updateProjectionMatrix();
     }
-    updateBones(joints, bones);
     cameraSettings.updateOverlay();
   });
   focalGroup.appendChild(document.createTextNode("📷"));
@@ -728,10 +724,7 @@ function injectTopbarControls() {
   gridCheckbox.checked = true;
   gridCheckbox.style.cssText = "accent-color:#2f9e63;";
   gridCheckbox.addEventListener("change", () => {
-    const { grid } = getScene().children.reduce((acc, c) => {
-      if (c instanceof THREE.GridHelper) acc.grid = c;
-      return acc;
-    }, {});
+    // P2-fix：删除未使用的 reduce 块（计算结果从未使用，真正工作的是下面的 traverse）
     getScene().traverse((child) => {
       if (child instanceof THREE.GridHelper || child instanceof THREE.AxesHelper) {
         child.visible = gridCheckbox.checked;
@@ -785,7 +778,11 @@ function injectTopbarControls() {
     panoUploadBtn.textContent = "⏳加载…";
     try {
       const url = URL.createObjectURL(file);
-      await panorama.load(url, scene);
+      try {
+        await panorama.load(url, scene);
+      } finally {
+        URL.revokeObjectURL(url); // P2-fix：objectURL 用后释放
+      }
       panorama.setEnabled(true);
       panoCheckbox.checked = true;
       showToast("🌐全景图已加载", false);
@@ -861,11 +858,13 @@ function injectTopbarControls() {
     poseImportBtn.textContent = "⏳解析中…";
     try {
       const img = new Image();
+      const objUrl = URL.createObjectURL(file);
       await new Promise((resolve, reject) => {
         img.onload = resolve;
         img.onerror = reject;
-        img.src = URL.createObjectURL(file);
+        img.src = objUrl;
       });
+      URL.revokeObjectURL(objUrl); // P2-fix：objectURL 用后释放
       const result = await openposeImport.importPose(
         file, externalManager, img.width, img.height,
         { facingAngle: 0, rootY: 0 }
@@ -890,7 +889,6 @@ function injectTopbarControls() {
   undoBtn.style.cssText = "padding:6px 8px;font-size:14px;";
   undoBtn.addEventListener("click", () => {
     if (performUndo(joints)) {
-      updateBones(joints, bones);
       cameraSettings.updateOverlay();
       updateStatus();
     }
@@ -902,7 +900,6 @@ function injectTopbarControls() {
   redoBtn.style.cssText = "padding:6px 8px;font-size:14px;";
   redoBtn.addEventListener("click", () => {
     if (performRedo(joints)) {
-      updateBones(joints, bones);
       cameraSettings.updateOverlay();
       updateStatus();
     }
@@ -1159,17 +1156,12 @@ setupProtocol((w, h, jointsArr, sceneData, decodedScene) => {
   let charsRestored = false;
   if (sceneData?.characters?.length) {
     charsRestored = restoreCharactersFromSnapshot(sceneData.characters, sceneData.activeCharId);
-  } else if (decodedScene?.v >= 2 && decodedScene.characters?.length) {
-    const manager = window.DS_FigureAPI?.getManager?.();
-    charsRestored = manager ? applyDecodedToManager(manager, decodedScene) : false;
   }
+  // P2-fix：decodedScene.v>=2 火柴人恢复分支（applyDecodedToManager）已删除
 
   if (!charsRestored && jointsArr) {
     const curJointMeshes = _dsRef.joints;
     sApplyJoints(curJointMeshes, jointsArr);
-    if (window.DS_FigureAPI?.applySpheresToBones) {
-      window.DS_FigureAPI.applySpheresToBones();
-    }
   }
 
   applySceneSnapshot(sceneData);
@@ -1200,7 +1192,6 @@ setupProtocol((w, h, jointsArr, sceneData, decodedScene) => {
     panorama.restore(sceneData.panorama, scene);
   }
 
-  updateBones(_dsRef.joints, _dsRef.bones);
   cameraSettings.updateOverlay();
   updateStatus();
 });
@@ -1362,7 +1353,7 @@ btnCancel.addEventListener("click", () => {
 
 function updateStatus() {
   const sel = getSelected();
-  const [ew, eh] = getExportWH();
+  // P2-fix：删除未使用的 [ew, eh] 解构（1123/1219 处的同名解构是有用的，不在此处）
   const undoN = getUndoDepth();
   let msg = "";
   if (sel) msg = `已选中关节`;
@@ -1476,17 +1467,13 @@ const _dsRef = {
   decodeSceneGz: (b64) => {
     const result = decodeSceneGz(b64);
     if (result) {
-      if (result.v >= 2 && result.characters?.length) {
-        const manager = window.DS_FigureAPI?.getManager?.();
-        if (manager) applyDecodedToManager(manager, result);
-      } else if (result.joints) {
+      if (result.joints) {
         const curJoints = _dsRef.joints;
         sApplyJoints(curJoints, result.joints);
       }
       if (result.focalLength !== undefined) {
         cameraSettings.setFocalLength(result.focalLength);
       }
-      updateBones(_dsRef.joints, _dsRef.bones);
       return result;
     }
     return null;
@@ -1495,19 +1482,14 @@ const _dsRef = {
   pushUndo: () => pushUndo(_dsRef.joints),
   performUndo: () => {
     const j = _dsRef.joints;
-    const ok = performUndo(j);
-    updateBones(j, _dsRef.bones);
-    return ok;
+    return performUndo(j);
   },
   performRedo: () => {
     const j = _dsRef.joints;
-    const ok = performRedo(j);
-    updateBones(j, _dsRef.bones);
-    return ok;
+    return performRedo(j);
   },
   getUndoDepth,
   getRedoDepth,
-  mirrorPose: () => mirrorPose(_dsRef.joints),
   setFocalLength: (mm) => {
     cameraSettings.setFocalLength(mm);
     const ac = cameraManager.getActiveCamera();
@@ -1526,7 +1508,6 @@ const _dsRef = {
   snapshot: () => snapshot(_dsRef.joints),
   restore: (snap) => {
     restore(_dsRef.joints, snap);
-    updateBones(_dsRef.joints, _dsRef.bones);
   },
 
   // M2 hooks
@@ -1543,9 +1524,28 @@ const _dsRef = {
   removeCamera: (id) => cameraManager.removeCamera(id),
   getCameraCount: () => cameraManager.cameras.length,
 
-  addProp: (kind, params) => {
-    const { PrimitiveFactory } = requireDynamic("./props.js");
-    // Simple fallback
+  // P1-fix：实现为 PrimitiveFactory + propManager.addProp 的真实代理
+  // （原调用不存在的 requireDynamic，任何 __ds.addProp 调用必抛 ReferenceError）
+  addProp: (kind, params = {}) => {
+    const color = params.color ?? 0x8899aa;
+    const creators = {
+      box: () => PrimitiveFactory.createBox(params.w ?? 0.5, params.h ?? 0.5, params.d ?? 0.5, color),
+      sphere: () => PrimitiveFactory.createSphere(params.r ?? 0.3, color),
+      cylinder: () => PrimitiveFactory.createCylinder(params.rTop ?? 0.2, params.rBot ?? 0.2, params.h ?? 0.8, color),
+      plane: () => PrimitiveFactory.createPlane(params.w ?? 1, params.h ?? 1, color),
+      torus: () => PrimitiveFactory.createTorus(params.r ?? 0.3, params.tube ?? 0.1, color),
+      cone: () => PrimitiveFactory.createCone(params.r ?? 0.3, params.h ?? 0.8, color),
+      pyramid: () => PrimitiveFactory.createPyramid(params.s ?? 0.4, params.h ?? 0.8, color),
+    };
+    const create = creators[kind];
+    if (!create) {
+      console.warn("[__ds.addProp] 未知道具类型:", kind);
+      return null;
+    }
+    const mesh = create();
+    const entry = propManager.addProp(params.name || kind, kind, mesh, { ...params, color: mesh.material.color.getHex() });
+    propsPanelUI?.refreshList?.();
+    return entry;
   },
   getPropCount: () => propManager.props.length,
   clearProps: () => { propManager.clear(); propsPanelUI.refreshList(); },
@@ -1584,7 +1584,9 @@ const _dsRef = {
   togglePanorama: () => panorama.toggle(),
   importOpenPose: async (file) => {
     const img = new Image();
-    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = URL.createObjectURL(file); });
+    const objUrl = URL.createObjectURL(file);
+    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = objUrl; });
+    URL.revokeObjectURL(objUrl); // P2-fix：objectURL 用后释放
     return openposeImport.importPose(file, externalManager, img.width, img.height);
   },
 };
@@ -1632,6 +1634,9 @@ updateStatus();
 const _detWorld = new THREE.Matrix4();
 const _detLocal = new THREE.Matrix4();
 
+// P1-fix：脚钉地跟踪根骨——优先 rigRoot（hips/pelvis），退化到 joint 1（Neck）
+const _rigRootBone = (jm) => jm?.get?.("rigRoot") || jm?.get?.(1) || null;
+
 function solveGLB_IK(data) {
   const { jointMap, ikTargets, allBones } = data;
   if (!jointMap || !ikTargets) return;
@@ -1645,13 +1650,13 @@ function solveGLB_IK(data) {
   // 脚钉地（仅非动作播放时生效，保持 IK 拖拽时的站姿稳定）
   if (!playingAction) {
     if (!data._rootPrev) {
-      const rootBone = jointMap.get(1); // Neck
+      const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
         data._rootPrev = new THREE.Vector3();
         rootBone.getWorldPosition(data._rootPrev);
       }
     } else {
-      const rootBone = jointMap.get(1);
+      const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
         const nowPos = new THREE.Vector3();
         rootBone.getWorldPosition(nowPos);
@@ -1686,17 +1691,19 @@ function solveGLB_IK(data) {
     const chainBones = [chain.root, chain.mid, chain.end].map(i => jointMap.get(i)).filter(Boolean);
     if (chainBones.length < 3) continue;
 
-    solveGLB_CCD(chainBones, target.target.position, target.pole.position);
-
-    // 扁平骨架修补：末端骨不在链条内（如 Rigify 的 Foot 挂根骨）时，
-    // CCD 转不动它——按绑定偏移矩阵手动贴回中段骨
+    // P2-fix：原无条件求解两遍（无 snap 一遍 + 带 snap 一遍）。
+    // 仅当存在 detachedEnds 时才走带 snap 的单次求解，否则一次普通求解。
     const det = data.detachedEnds?.[name];
-    const snap = det ? () => snapDetachedEnd(det) : null;
-    if (det) snap();
-
-    solveGLB_CCD(chainBones, target.target.position, target.pole.position, 10, 0.001, snap);
-
-    if (det) snap();
+    if (det) {
+      // 扁平骨架修补：末端骨不在链条内（如 Rigify 的 Foot 挂根骨）时，
+      // CCD 转不动它——按绑定偏移矩阵手动贴回中段骨
+      const snap = () => snapDetachedEnd(det);
+      snap();
+      solveGLB_CCD(chainBones, target.target.position, target.pole.position, 10, 0.001, snap);
+      snap();
+    } else {
+      solveGLB_CCD(chainBones, target.target.position, target.pole.position);
+    }
   }
 
   // 刷新骨骼世界矩阵
@@ -1801,13 +1808,13 @@ function solveVRM_IK(data) {
   if (!playingAction) {
     // 脚钉地（与 GLB 逻辑一致）
     if (!data._rootPrev) {
-      const rootBone = jointMap.get(1); // Neck
+      const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
         data._rootPrev = new THREE.Vector3();
         rootBone.getWorldPosition(data._rootPrev);
       }
     } else {
-      const rootBone = jointMap.get(1);
+      const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
         const nowPos = new THREE.Vector3();
         rootBone.getWorldPosition(nowPos);
@@ -1856,6 +1863,9 @@ function renderLoop(ts) {
     const dt = _lastFrameTs ? (ts - _lastFrameTs) / 1000 : 0.016;
     _lastFrameTs = ts || performance.now();
 
+    // P0-fix：ac 声明上移（原在 panorama 分支后声明，全景模式 TDZ ReferenceError）
+    const ac = cameraManager.getActiveCamera();
+
     // 更新 OrbitControls 的相机（用于关节投影计算）
     if (panorama.isEnabled()) {
       // 全景模式：相机锁原点，仅旋转（距离用极微小值保持球坐标正常运算）
@@ -1877,14 +1887,10 @@ function renderLoop(ts) {
     }
     // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
     scene.updateMatrixWorld();
-    const ac = cameraManager.getActiveCamera();
     if (ac) {
       ac.pos = ac.camera.position.toArray();
       ac.target = orbit.target.toArray();
     }
-    
-    // FK模式更新骨骼
-    updateBones(joints, bones);
 
     // P3-1 3D-only：火柴人永久隐藏（防御性每帧压制——restore/setActive/导入等路径可能重新点亮）
     figureGroup.visible = false;
@@ -1903,6 +1909,10 @@ function renderLoop(ts) {
 
     // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
     actionRuntime.tick(dt);
+    // P2-fix：VRM 实例每帧更新（弹簧骨/视线），原从不 update 导致 springBone 僵直
+    for (const entry of externalManager.characters.values()) {
+      if (entry.type === "vrm" && entry.vrm?.update) entry.vrm.update(dt);
+    }
     // P3-0：骨骼显示 —— 补齐/清理 SkeletonHelper 并同步可见性
     skeletonHelpers.syncAll();
     
