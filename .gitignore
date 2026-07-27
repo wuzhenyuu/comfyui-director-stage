@@ -4,3 +4,8 @@ __pycache__/
 .vite/
 *.bak*
 tmp/
+
+editor-src/test/out/
+fake_input/
+*.log
+editor-src/test/*.txt
