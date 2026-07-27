@@ -285,11 +285,15 @@ def _resolve_resolution(manifest_data, camera_data, width, height):
     return _clamp_resolution(w), _clamp_resolution(h)
 
 
-def _iter_manifest_files(data):
-    """遍历 manifest 引用的所有文件相对路径。
+def _iter_manifest_files(data, camera=None):
+    """遍历 manifest 引用的文件相对路径。
 
-    覆盖：M1 顶层 files、M2 cameras[].files、布局 A cameras[].masks[].file、
-    布局 B 顶层 masks[].file。
+    camera=None（默认）：全部文件——M1 顶层 files、M2 cameras[].files、
+      布局 A cameras[].masks[].file、布局 B 顶层 masks[].file。
+    camera 指定（P2-fix 缓存粒度细化）：仅该机位相关文件——
+      cameras[i].files + 该机位归属的 mask（布局 A 内嵌 masks 优先，
+      否则布局 B 顶层 masks 按 cameraId 过滤，与 _collect_camera_masks 同一规则）。
+      顶层 files 不纳入（M2 分支不读取它）。
     """
     paths = []
     if not isinstance(data, dict):
@@ -298,6 +302,18 @@ def _iter_manifest_files(data):
     def _add(v):
         if isinstance(v, str) and v.strip():
             paths.append(v)
+
+    if camera is not None:
+        if not isinstance(camera, dict):
+            return paths
+        cfiles = camera.get("files")
+        if isinstance(cfiles, dict):
+            for v in cfiles.values():
+                _add(v)
+        # 与 _collect_camera_masks 完全相同的归属规则
+        for m in _collect_camera_masks(camera, data):
+            _add(m.get("file"))
+        return paths
 
     files = data.get("files")
     if isinstance(files, dict):
@@ -325,14 +341,16 @@ def _iter_manifest_files(data):
     return paths
 
 
-def _hash_manifest_files(hasher, manifest_data):
+def _hash_manifest_files(hasher, manifest_data, camera=None):
     """把 manifest 引用文件的 (name, mtime_ns, size) 纳入哈希。
 
-    编辑器同名覆盖导出时 manifest 字符串不变，靠 mtime/size 破掉陈旧缓存。
+    编辑器同名覆盖导出时 manifest 字符串不变，靠 mtime/size 破掉陈旧缓存（P1-3）。
+    camera 指定时仅哈希该机位相关文件（P2-fix）：改其他机位重导出不再导致
+    本节点缓存无意义失效；本机位文件被同名覆盖时 mtime/size 变化仍会破缓存。
     """
     if folder_paths is None:
         return
-    for rel in _iter_manifest_files(manifest_data):
+    for rel in _iter_manifest_files(manifest_data, camera=camera):
         try:
             path = _safe_resolve_path(rel)
             if path and os.path.isfile(path):
@@ -379,7 +397,14 @@ class DirectorStage:
         h = hashlib.sha256()
         h.update(str(manifest).encode("utf-8"))
         h.update(("%sx%s" % (width, height)).encode("utf-8"))
-        _hash_manifest_files(h, _parse_manifest(manifest))
+        data = _parse_manifest(manifest)
+        # P2-fix：输出只依赖 cameras[0]，按机位维度哈希文件，避免改其他机位
+        # 重导出导致本节点缓存无意义失效；M1 无 cameras 时哈希顶层 files。
+        cameras = data.get("cameras")
+        if isinstance(cameras, list) and len(cameras) > 0 and isinstance(cameras[0], dict):
+            _hash_manifest_files(h, data, camera=cameras[0])
+        else:
+            _hash_manifest_files(h, data)
         return h.hexdigest()
 
     # ------------------------------------------------------------------ run
@@ -472,7 +497,12 @@ class DirectorStageShot:
         h.update(str(manifest).encode("utf-8"))
         h.update(str(camera_index).encode("utf-8"))
         h.update(("%sx%s" % (width, height)).encode("utf-8"))
-        _hash_manifest_files(h, _parse_manifest(manifest))
+        data = _parse_manifest(manifest)
+        # P2-fix：输出只依赖 cameras[camera_index]，按机位维度哈希文件；
+        # 无 cameras / 索引越界时 run 输出全空白，无需文件哈希。
+        cameras = data.get("cameras")
+        if isinstance(cameras, list) and 0 <= camera_index < len(cameras):
+            _hash_manifest_files(h, data, camera=cameras[camera_index])
         return h.hexdigest()
 
     def run(self, scene_gz="", manifest="{}", camera_index=0, width=1024, height=1024):

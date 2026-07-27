@@ -83,6 +83,12 @@ function openEditor(node) {
       const sceneJsonWidget = findWidget(node, "scene_json");
       const widthWidget = findWidget(node, "width");
       const heightWidget = findWidget(node, "height");
+      // P2-fix：targetOrigin 不用 "*"，与编辑器侧 protocol.js/export.js 的安全姿态统一；
+      // iframe 由 ComfyUI 同源伺服，解析失败时回退 location.origin
+      let targetOrigin = location.origin;
+      try {
+        targetOrigin = new URL(iframe.src, location.href).origin;
+      } catch (e) { /* 保持 location.origin 兜底 */ }
       iframe.contentWindow.postMessage(
         {
           type: "init",
@@ -93,7 +99,7 @@ function openEditor(node) {
             height: heightWidget ? heightWidget.value : undefined,
           },
         },
-        "*"
+        targetOrigin
       );
     } else if (data.type === "exportDone") {
       const payload = data.payload || {};

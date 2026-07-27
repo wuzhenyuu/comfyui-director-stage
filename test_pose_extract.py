@@ -174,5 +174,69 @@ finally:
     pose_extract._load_dwpose_detector = orig_loader
     _reset_detector_state()
 
+# ---------------------------------------------------------------------------
+# 5. P2-1：全零置信度「空人」降级
+# ---------------------------------------------------------------------------
+print("== 空人降级（全零置信度）==")
+
+flat_empty = []
+for i in range(18):
+    flat_empty += [float(i), float(i * 2), 0.0]  # 检出 bbox 但 18 个关键点 c 全为 0
+
+
+class _MockEmptyPersonDetector:
+    def __call__(self, img, **kwargs):
+        return (None, {"people": [{"pose_keypoints_2d": flat_empty}]})
+
+
+_reset_detector_state()
+pose_extract._dwpose_detector = (_MockEmptyPersonDetector(), "openpose_json")
+persons = pose_extract._detect_2d_keypoints_pil(_FakeImage(100, 200))
+
+check("空人被过滤 → 走 T-pose 兜底（仍返回 1 人）", len(persons) == 1)
+check("空人降级 is_default=True（显式标记）", persons[0].get("is_default") is True)
+
+
+class _MockMixedDetector:
+    def __call__(self, img, **kwargs):
+        return (None, {"people": [
+            {"pose_keypoints_2d": flat_empty},
+            {"pose_keypoints_2d": flat},  # 第 1 节的有效人员
+        ]})
+
+
+_reset_detector_state()
+pose_extract._dwpose_detector = (_MockMixedDetector(), "openpose_json")
+persons = pose_extract._detect_2d_keypoints_pil(_FakeImage())
+
+check("混合人员：空人被过滤，仅剩 1 个有效人", len(persons) == 1)
+check("保留的是有效人（is_default=False 且 score>0）",
+      persons[0].get("is_default") is False and persons[0]["score"] > 0)
+
+# convert：全零 keypoints_3d → 回退 T-pose（下游关节不坍缩原点）
+zero_pose = {
+    "persons": [{"keypoints_3d": [[0.0, 0.0, 0.0]] * 18}],
+    "selected_index": 0,
+}
+joints, = pose_extract.PoseDataToJoints().convert(zero_pose)
+check("convert 全零 3D 关节 → 回退 T-pose", joints == pose_extract._T_POSE_3D)
+
+# ---------------------------------------------------------------------------
+# 6. P2-3：ExtractPoseFromImage.extract 异常兜底（绝不炸队列）
+# ---------------------------------------------------------------------------
+print("== extract 异常兜底 ==")
+import torch  # noqa: E402
+
+_node = pose_extract.ExtractPoseFromImage()
+out, = _node.extract(torch.zeros((0, 8, 8, 3)))
+check("batch=0 张量不炸队列，返回空 POSE_DATA",
+      out["persons"] == [] and out["format"] == "coco_18")
+
+out2, = _node.extract(torch.zeros((8, 8, 3)))
+check("非 4 维张量不炸队列，返回空 POSE_DATA",
+      out2["persons"] == [] and out2["format"] == "coco_18")
+
+_reset_detector_state()
+
 print("\n结果: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

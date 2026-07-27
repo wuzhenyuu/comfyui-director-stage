@@ -7,6 +7,7 @@
 import io
 import json
 import os
+import sys
 import time
 
 import numpy as np
@@ -18,6 +19,35 @@ COMFYUI_DIR = os.environ.get("COMFYUI_DIR", "F:/comfyui")
 INPUT = os.path.join(COMFYUI_DIR, "input", "director_stage")
 OUTPUT = os.path.join(COMFYUI_DIR, "output")
 POLL_TIMEOUT = 60  # 秒
+
+RESULTS = {"pass": 0, "fail": 0}
+
+
+def expect(cond, label):
+    if cond:
+        RESULTS["pass"] += 1
+        print(f"  PASS {label}")
+    else:
+        RESULTS["fail"] += 1
+        print(f"  FAIL {label}")
+
+
+def check_image_content(fpath, expect_size=(512, 512), expect_blank=False):
+    """读回输出 PNG 断言尺寸与是否全零（P2-4：空白兜底图与成功输出必须可区分）。"""
+    name = os.path.basename(fpath)
+    try:
+        img = Image.open(fpath)
+        arr = np.asarray(img.convert("RGB"))
+        if expect_size is not None:
+            expect(img.size == expect_size,
+                   f"{name} 尺寸 == {expect_size}（实际 {img.size}）")
+        nonzero = bool(arr.any())
+        if expect_blank:
+            expect(not nonzero, f"{name} 为全零空白图（兜底行为符合预期）")
+        else:
+            expect(nonzero, f"{name} 内容非全零（非兜底空白图）")
+    except Exception as e:
+        expect(False, f"{name} 读回失败: {e}")
 
 os.makedirs(INPUT, exist_ok=True)
 
@@ -46,13 +76,17 @@ def wait_for_history(pid, timeout=POLL_TIMEOUT):
     return None
 
 
-def check_outputs(h, pid):
+def check_outputs(h, pid, expect_size=(512, 512), expect_blank=False):
     outs = h.get(pid, {}).get("outputs", {})
     for k in sorted(outs.keys()):
         for img in outs[k].get("images", []):
             fp = os.path.join(OUTPUT, img["filename"])
             exist = os.path.exists(fp)
             print(f"  Output {k}: {img['filename']} ({os.path.getsize(fp) if exist else 0}b) {'OK' if exist else 'MISSING'}")
+            if exist:
+                check_image_content(fp, expect_size, expect_blank)
+            else:
+                expect(False, f"{img['filename']} 文件存在")
 
 
 # M2 manifest with cameras + masks
@@ -115,7 +149,8 @@ print(f"  Prompt: {r3.get('prompt_id', 'FAIL')} | errors: {r3.get('node_errors',
 if r3.get("prompt_id"):
     h3 = wait_for_history(r3["prompt_id"])
     if h3:
-        check_outputs(h3, r3["prompt_id"])
+        # P2-4：空 manifest → 全通道空白兜底，反向断言输出「为」全零以锁定兜底行为
+        check_outputs(h3, r3["prompt_id"], expect_blank=True)
     else:
         print(f"  TIMEOUT: no history within {POLL_TIMEOUT}s")
 
@@ -136,3 +171,5 @@ for f in test_files:
         os.remove(p)
 
 print("\nAll tests complete.")
+print(f"内容断言: {RESULTS['pass']} passed, {RESULTS['fail']} failed")
+sys.exit(1 if RESULTS["fail"] else 0)

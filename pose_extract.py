@@ -162,6 +162,16 @@ def _get_dwpose_detector():
         return None
 
 
+def _has_valid_keypoints(person):
+    """person 是否含至少一个有效关键点（c > 0.1）。
+
+    P2-fix：DWPose 可能检出人体 bbox 但全身关键点置信度 <0.3（模糊/遮挡图），
+    vendored format_result 会把这些点置 None→[0,0,0]，形成"空人"。
+    空人不过滤会导致下游关节全部坍缩到原点且无 is_default 标记。
+    """
+    return any(kp[2] > 0.1 for kp in person.get("keypoints") or [])
+
+
 def _person_from_keypoints(keypoints, is_default=False):
     """由 [[x, y, score] * 18] 组装 person dict（bbox / 平均置信度）。"""
     valid = [kp for kp in keypoints if kp[2] > 0.1]
@@ -247,9 +257,12 @@ def _detect_2d_keypoints_pil(image_pil):
                 persons = _parse_openpose_json(pose_json or {})
             else:  # flavor == "bodies"
                 persons = _parse_bodies_dict(detector(np.asarray(image_pil)) or {})
+            # P2-fix：过滤全零置信度"空人"（检出 bbox 但 18 个关键点 c 全为 0），
+            # 过滤后为空则走 T-pose 兜底（带 is_default=True 显式标记）
+            persons = [p for p in persons if _has_valid_keypoints(p)]
             if persons:
                 return persons
-            _log("ERROR：DWPose 未检测到任何人物，输出默认 T-pose（is_default=True）。")
+            _log("ERROR：DWPose 未检测到有效人物（无检出或关键点置信度全为零），输出默认 T-pose（is_default=True）。")
         except Exception as e:
             _log("ERROR：DWPose 检测执行失败（%s），输出默认 T-pose（is_default=True）。" % e)
     else:
@@ -405,52 +418,62 @@ class ExtractPoseFromImage:
             "format": "coco_18"
         }
         """
-        # 获取图像尺寸
-        if isinstance(image, torch.Tensor):
-            batch, h, w, _ = image.shape
-            if batch > 1:
-                _log("警告：输入 batch=%d，姿势提取仅处理第 0 帧，其余帧被忽略。" % batch)
-        else:
-            w, h = 512, 512
-        
-        # 转换为 PIL Image
-        if Image is None:
-            _log("错误：PIL 不可用，无法处理图像")
+        w, h = 512, 512  # 兜底尺寸（异常路径返回 _empty_pose_data 时使用）
+        try:
+            # 获取图像尺寸（P2-fix：解包前校验维度与 batch，避免 IndexError/ValueError 炸队列）
+            if isinstance(image, torch.Tensor):
+                if image.dim() != 4 or image.shape[0] < 1:
+                    raise ValueError(
+                        "非法 IMAGE 张量：期望 [B,H,W,C] 且 B>=1，实际 shape=%s"
+                        % (tuple(image.shape),)
+                    )
+                batch, h, w, _ = image.shape
+                if batch > 1:
+                    _log("警告：输入 batch=%d，姿势提取仅处理第 0 帧，其余帧被忽略。" % batch)
+
+            # 转换为 PIL Image
+            if Image is None:
+                _log("错误：PIL 不可用，无法处理图像")
+                return (self._empty_pose_data(w, h),)
+
+            # tensor → numpy → PIL
+            if isinstance(image, torch.Tensor):
+                img_np = image[0].cpu().numpy()  # [H, W, C]
+                img_np = (img_np * 255).clip(0, 255).astype(np.uint8)
+                image_pil = Image.fromarray(img_np)
+            else:
+                image_pil = image
+
+            # 检测 2D 关键点
+            persons = _detect_2d_keypoints_pil(image_pil)
+
+            # 估计 3D 坐标
+            if estimate_depth:
+                for person in persons:
+                    person["keypoints_3d"] = _estimate_depth_from_2d(
+                        person["keypoints"], w, h
+                    )
+
+            # 选择人物
+            selected = min(person_index, len(persons) - 1) if persons else 0
+
+            pose_data = {
+                "persons": persons,
+                "selected_index": selected,
+                "image_size": [w, h],
+                "format": "coco_18",
+                "depth_estimated": "planar",  # 3D 为平面深度估计，供下游判断可信度
+                "timestamp": time.time(),  # 记录提取时间，供调试/缓存排查
+            }
+
+            _log(f"检测到 {len(persons)} 个人物，选择第 {selected} 个")
+
+            return (pose_data,)
+        except Exception as e:
+            # P2-fix：与 nodes.py 六路输出同样的「绝不炸队列」防御深度——
+            # 任何异常都 ERROR 日志 + 空 POSE_DATA，不中断整个 prompt 队列
+            _log("ERROR：姿势提取失败（%s），返回空 POSE_DATA（不炸队列）。" % e)
             return (self._empty_pose_data(w, h),)
-        
-        # tensor → numpy → PIL
-        if isinstance(image, torch.Tensor):
-            img_np = image[0].cpu().numpy()  # [H, W, C]
-            img_np = (img_np * 255).clip(0, 255).astype(np.uint8)
-            image_pil = Image.fromarray(img_np)
-        else:
-            image_pil = image
-        
-        # 检测 2D 关键点
-        persons = _detect_2d_keypoints_pil(image_pil)
-        
-        # 估计 3D 坐标
-        if estimate_depth:
-            for person in persons:
-                person["keypoints_3d"] = _estimate_depth_from_2d(
-                    person["keypoints"], w, h
-                )
-        
-        # 选择人物
-        selected = min(person_index, len(persons) - 1) if persons else 0
-        
-        pose_data = {
-            "persons": persons,
-            "selected_index": selected,
-            "image_size": [w, h],
-            "format": "coco_18",
-            "depth_estimated": "planar",  # 3D 为平面深度估计，供下游判断可信度
-            "timestamp": time.time(),  # 记录提取时间，供调试/缓存排查
-        }
-        
-        _log(f"检测到 {len(persons)} 个人物，选择第 {selected} 个")
-        
-        return (pose_data,)
     
     def _empty_pose_data(self, width, height):
         """返回空的姿势数据"""
@@ -510,7 +533,13 @@ class PoseDataToJoints:
         
         if not keypoints_3d:
             return (_T_POSE_3D,)
-        
+
+        # P2-fix：全零 3D 关节（空人 / 深度估计失败的产物）回退 T-pose，
+        # 避免下游 3D 人偶全部关节坍缩到原点
+        if not any(any(abs(v) > 1e-9 for v in joint) for joint in keypoints_3d):
+            _log("警告：选中人物的 3D 关键点全为零（空人/检测失败），回退默认 T-pose。")
+            return (_T_POSE_3D,)
+
         # 应用深度缩放和高度偏移
         joints = []
         for x, y, z in keypoints_3d:
