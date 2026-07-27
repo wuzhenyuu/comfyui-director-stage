@@ -66,72 +66,196 @@ def _log(msg):
 
 
 # ============================================================================
-# DWPose 检测器（延迟加载 + 优雅降级）
+# DWPose 检测器（延迟加载 + 优雅降级 + 双版本兼容）
 # ============================================================================
+#
+# 兼容两种真实存在的 controlnet_aux API（已按本机 F:\comfyui 实际安装核实）：
+#   flavor "openpose_json"：新版 pip controlnet_aux 及 ComfyUI 自定义节点
+#     comfyui_controlnet_aux 的 vendored custom_controlnet_aux（本机为此种）。
+#     DwposeDetector.from_pretrained("yzd-v/DWPose", ...) 构造；
+#     detector(img, include_body=True, image_and_json=True)
+#       → (pil_img, {"people": [{"pose_keypoints_2d": [x,y,c] * 18}], ...})
+#   flavor "bodies"：PyPI controlnet_aux 0.0.10（DWposeDetector 无 from_pretrained）。
+#     DWposeDetector() 构造；detector(np_img)
+#       → {"bodies": {"candidate": [K,≥2], "subset": [N,20]}, "hands", "faces"}
 
-_dwpose_detector = None
+_DWPOSE_MAX_TRANSIENT_FAILS = 3      # 连续瞬时失败次数上限，达到后进入冷却
+_DWPOSE_LOAD_COOLDOWN_SECONDS = 300  # 冷却时长（秒），过后自动重试
+
+_dwpose_detector = None       # 加载成功： (detector, flavor)
+_dwpose_dep_missing = False   # 依赖不存在：永久 fallback（重试无意义）
+_dwpose_fail_count = 0        # 瞬时加载失败计数
+_dwpose_last_fail = 0.0       # 上次瞬时失败时间戳
+
+
+class _DependencyMissing(Exception):
+    """controlnet_aux / comfyui_controlnet_aux 依赖不存在（区别于瞬时加载失败）。"""
+
+
+def _load_dwpose_detector():
+    """按本机实际安装情况加载 DWPose 检测器，返回 (detector, flavor)。
+
+    依赖不存在抛 _DependencyMissing（可缓存 fallback）；
+    模型下载中断 / 显存不足等瞬时错误抛原异常（调用方不缓存，下次重试）。
+    """
+    # 1) 优先：pip 安装的 controlnet_aux
+    try:
+        from controlnet_aux import DWposeDetector as _PipDWpose
+    except ImportError:
+        _PipDWpose = None
+
+    if _PipDWpose is not None:
+        if hasattr(_PipDWpose, "from_pretrained"):
+            # 新版 pip controlnet_aux：与 vendored 版同一套 API
+            return _PipDWpose.from_pretrained("yzd-v/DWPose"), "openpose_json"
+        # 0.0.10 老版：无 from_pretrained，构造即加载/下载默认模型
+        return _PipDWpose(), "bodies"
+
+    # 2) 兜底：ComfyUI 自定义节点 comfyui_controlnet_aux 的 vendored 版本
+    try:
+        from comfyui_controlnet_aux.src.custom_controlnet_aux.dwpose import (
+            DwposeDetector as _VendoredDwpose,
+        )
+    except ImportError as e:
+        raise _DependencyMissing(
+            "未安装 controlnet_aux，也未发现 comfyui_controlnet_aux 自定义节点（%s）" % e
+        )
+
+    return _VendoredDwpose.from_pretrained(
+        "yzd-v/DWPose",
+        det_filename="yolox_l.onnx",
+        pose_filename="dw-ll_ucoco_384.onnx",
+    ), "openpose_json"
 
 
 def _get_dwpose_detector():
-    """获取 DWPose 检测器（单例，延迟加载）
-    如果 controlnet_aux 不可用，返回 None
+    """获取 DWPose 检测器（单例，延迟加载）。
+
+    - 成功：缓存 (detector, flavor) 并返回；
+    - 依赖不存在：永久 fallback，返回 None（重试无意义）；
+    - 瞬时加载失败：不缓存，下次调用重试；连续失败达到上限后冷却一段时间。
     """
-    global _dwpose_detector
+    global _dwpose_detector, _dwpose_dep_missing, _dwpose_fail_count, _dwpose_last_fail
     if _dwpose_detector is not None:
         return _dwpose_detector
-    
+    if _dwpose_dep_missing:
+        return None
+    if _dwpose_fail_count >= _DWPOSE_MAX_TRANSIENT_FAILS:
+        if (time.time() - _dwpose_last_fail) < _DWPOSE_LOAD_COOLDOWN_SECONDS:
+            return None
+        _dwpose_fail_count = 0  # 冷却结束，放开重试
+
     try:
-        from controlnet_aux import DWposeDetector
-        _dwpose_detector = DWposeDetector.from_pretrained()
-        _log("DWPose 检测器加载成功")
+        _dwpose_detector = _load_dwpose_detector()
+        _dwpose_fail_count = 0
+        _log("DWPose 检测器加载成功（flavor=%s）" % _dwpose_detector[1])
         return _dwpose_detector
+    except _DependencyMissing as e:
+        _dwpose_dep_missing = True
+        _log("ERROR：DWPose 依赖不存在，姿势提取将始终输出默认 T-pose：%s" % e)
+        return None
     except Exception as e:
-        _log(f"警告：DWPose 检测器加载失败（{e}），将使用备用 OpenPose")
-        _dwpose_detector = "fallback"
+        _dwpose_fail_count += 1
+        _dwpose_last_fail = time.time()
+        _log("ERROR：DWPose 检测器加载失败（第 %d 次，下次调用将重试）：%s"
+             % (_dwpose_fail_count, e))
         return None
 
 
-def _detect_2d_keypoints_pil(image_pil):
-    """从 PIL Image 检测 2D 关键点
-    返回: list of dict, 每个人包含 {"keypoints": [[x, y, score], ...], "bbox": [x1, y1, x2, y2]}
+def _person_from_keypoints(keypoints, is_default=False):
+    """由 [[x, y, score] * 18] 组装 person dict（bbox / 平均置信度）。"""
+    valid = [kp for kp in keypoints if kp[2] > 0.1]
+    if valid:
+        xs = [kp[0] for kp in valid]
+        ys = [kp[1] for kp in valid]
+        bbox = [min(xs), min(ys), max(xs), max(ys)]
+        score = float(np.mean([kp[2] for kp in valid]))
+    else:
+        bbox = [0.0, 0.0, 0.0, 0.0]
+        score = 0.0
+    return {
+        "keypoints": keypoints,
+        "bbox": bbox,
+        "score": score,
+        "is_default": is_default,
+    }
+
+
+def _parse_openpose_json(result):
+    """解析 openpose JSON 格式：{"people": [{"pose_keypoints_2d": [x,y,c] * 18}]}。"""
+    persons = []
+    for person in (result.get("people") or []):
+        flat = person.get("pose_keypoints_2d") or []
+        keypoints = []
+        usable = min(len(flat) - (len(flat) % 3), 54)  # 18 个关键点 × 3
+        for i in range(0, usable, 3):
+            keypoints.append([float(flat[i]), float(flat[i + 1]), float(flat[i + 2])])
+        while len(keypoints) < 18:
+            keypoints.append([0.0, 0.0, 0.0])
+        persons.append(_person_from_keypoints(keypoints))
+    return persons
+
+
+def _parse_bodies_dict(result):
+    """解析 0.0.10 格式：{"bodies": {"candidate": [K,≥2], "subset": [N,20]}}。
+
+    subset 每行前 18 列为 candidate 索引（-1 = 该关键点缺失），后两列为整体得分/点数；
+    candidate 若带第 3 列则作为单点置信度，否则置 1.0。
     """
-    detector = _get_dwpose_detector()
-    
-    if detector is not None and detector != "fallback":
-        # 使用 DWPose
+    bodies = result.get("bodies") or {}
+    candidate = np.asarray(bodies.get("candidate", []), dtype=np.float64)
+    subset = np.asarray(bodies.get("subset", []), dtype=np.float64)
+    if candidate.ndim != 2 or candidate.shape[0] == 0:
+        return []
+    if subset.ndim == 1:
+        subset = subset.reshape(1, -1)
+
+    persons = []
+    for row in subset:
+        keypoints = []
+        for j in range(18):
+            idx = int(row[j]) if j < len(row) else -1
+            if 0 <= idx < candidate.shape[0]:
+                c = candidate[idx]
+                score = float(c[2]) if c.shape[0] >= 3 else 1.0
+                keypoints.append([float(c[0]), float(c[1]), score])
+            else:
+                keypoints.append([0.0, 0.0, 0.0])
+        persons.append(_person_from_keypoints(keypoints))
+    return persons
+
+
+def _detect_2d_keypoints_pil(image_pil):
+    """从 PIL Image 检测 2D 关键点。
+
+    返回: list of person dict（keypoints/bbox/score/is_default）。
+    检测器不可用或检测失败时打 ERROR 级日志并返回默认 T-pose（is_default=True），不静默。
+    """
+    loaded = _get_dwpose_detector()
+
+    if loaded is not None:
+        detector, flavor = loaded
         try:
-            result = detector(image_pil, output_type="dict")
-            # DWPose 返回格式: {"candidates": [...], "scores": [...]}
-            candidates = result.get("candidates", [])
-            scores = result.get("scores", [])
-            
-            persons = []
-            for i, candidate in enumerate(candidates):
-                # candidate: [[x, y], [x, y], ...] 18 个关键点
-                keypoints = []
-                for j, (x, y) in enumerate(candidate):
-                    score = scores[i][j] if i < len(scores) and j < len(scores[i]) else 1.0
-                    keypoints.append([float(x), float(y), float(score)])
-                
-                # 计算 bbox
-                xs = [kp[0] for kp in keypoints if kp[2] > 0.1]
-                ys = [kp[1] for kp in keypoints if kp[2] > 0.1]
-                if xs and ys:
-                    bbox = [min(xs), min(ys), max(xs), max(ys)]
-                else:
-                    bbox = [0, 0, 0, 0]
-                
-                persons.append({
-                    "keypoints": keypoints,
-                    "bbox": bbox,
-                    "score": float(np.mean([kp[2] for kp in keypoints if kp[2] > 0.1])) if xs else 0.0
-                })
-            
-            return persons
+            if flavor == "openpose_json":
+                _, pose_json = detector(
+                    image_pil,
+                    include_body=True,
+                    include_hand=False,
+                    include_face=False,
+                    image_and_json=True,
+                )
+                persons = _parse_openpose_json(pose_json or {})
+            else:  # flavor == "bodies"
+                persons = _parse_bodies_dict(detector(np.asarray(image_pil)) or {})
+            if persons:
+                return persons
+            _log("ERROR：DWPose 未检测到任何人物，输出默认 T-pose（is_default=True）。")
         except Exception as e:
-            _log(f"DWPose 检测失败（{e}），尝试备用方案")
-    
-    # 备用方案：返回默认 T-pose（前端可手动调整）
+            _log("ERROR：DWPose 检测执行失败（%s），输出默认 T-pose（is_default=True）。" % e)
+    else:
+        _log("ERROR：DWPose 检测器不可用，输出默认 T-pose（is_default=True）。")
+
+    # 降级：返回默认 T-pose（前端可手动调整）
     return [_create_default_pose(image_pil.width, image_pil.height)]
 
 
@@ -189,12 +313,8 @@ def _estimate_depth_from_2d(keypoints_2d, image_width, image_height):
     
     返回: list of [x, y, z] 3D 坐标（米）
     """
-    # 标准人体尺寸（米）
-    STANDARD_HEIGHT = 1.75  # 身高
-    SHOULDER_WIDTH = 0.36   # 肩宽
-    TORSO_LENGTH = 0.5      # 躯干长度
-    LEG_LENGTH = 0.9        # 腿长
-    ARM_LENGTH = 0.6        # 手臂长度
+    # 标准人体身高（米），用于针孔模型反推距离
+    STANDARD_HEIGHT = 1.75
     
     # 计算图像中人物的像素高度
     ys = [kp[1] for kp in keypoints_2d if kp[2] > 0.1]
@@ -287,7 +407,9 @@ class ExtractPoseFromImage:
         """
         # 获取图像尺寸
         if isinstance(image, torch.Tensor):
-            _, h, w, _ = image.shape
+            batch, h, w, _ = image.shape
+            if batch > 1:
+                _log("警告：输入 batch=%d，姿势提取仅处理第 0 帧，其余帧被忽略。" % batch)
         else:
             w, h = 512, 512
         
@@ -322,6 +444,7 @@ class ExtractPoseFromImage:
             "selected_index": selected,
             "image_size": [w, h],
             "format": "coco_18",
+            "depth_estimated": "planar",  # 3D 为平面深度估计，供下游判断可信度
             "timestamp": time.time(),  # 记录提取时间，供调试/缓存排查
         }
         

@@ -151,3 +151,43 @@ app.registerExtension({
     };
   },
 });
+
+// DirectorStageShot：主节点重新导出后，Shot 节点静默持有旧 manifest 会出旧图。
+// 提供「从 DirectorStage 同步 manifest」按钮：遍历画布找到 DirectorStage 主节点，
+// 读取其 manifest widget 值写入本节点（多主节点时取第一个）。
+app.registerExtension({
+  name: "Comfy.DirectorStageShot",
+  async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (!nodeData || nodeData.name !== "DirectorStageShot") return;
+
+    const onNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+      const result = onNodeCreated
+        ? onNodeCreated.apply(this, arguments)
+        : undefined;
+
+      this.addWidget("button", "🔄 从 DirectorStage 同步 manifest", null, () => {
+        const graph = app.graph;
+        const nodes = graph ? graph._nodes || graph.nodes || [] : [];
+        const stage = nodes.find((n) => n && n.type === "DirectorStage");
+        if (!stage) {
+          console.warn(
+            "[DirectorStageShot] 画布中没有 DirectorStage 主节点，无法同步 manifest。"
+          );
+          return;
+        }
+        const src = findWidget(stage, "manifest");
+        const dst = findWidget(this, "manifest");
+        if (!src || !dst) {
+          console.warn("[DirectorStageShot] manifest widget 未找到，同步失败。");
+          return;
+        }
+        dst.value = src.value;
+        if (app.graph) app.graph.setDirtyCanvas(true, true);
+        console.log("[DirectorStageShot] 已从 DirectorStage 同步 manifest。");
+      });
+
+      return result;
+    };
+  },
+});

@@ -12,6 +12,9 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 #: input/director_stage/ 下 PNG 的保留天数，超过则在启动时清理
 _CLEANUP_MAX_AGE_DAYS = 7
 
+#: 无论多旧都保底保留最近 N 份控制图（防止长期项目被静默清空）
+_CLEANUP_KEEP_RECENT = 20
+
 
 def _log(msg):
     """安全打印：兼容 GBK 等控制台编码，打印本身绝不抛异常。"""
@@ -26,6 +29,17 @@ def _log(msg):
             print(text.encode(enc, "replace").decode(enc, "replace"))
         except Exception:
             pass
+
+
+def _warn_if_empty_dir(path, label, required_file=None):
+    """静态目录缺失/为空（或缺关键文件）时打警告 —— 构建产物遗漏不应静默变 404/白屏。"""
+    try:
+        if not os.path.isdir(path) or not os.listdir(path):
+            _log("警告：%s 目录缺失或为空（%s）——可能是构建产物未生成，相关页面将 404/白屏。" % (label, path))
+        elif required_file and not os.path.isfile(os.path.join(path, required_file)):
+            _log("警告：%s 缺少 %s（%s）——构建不完整，页面可能白屏。" % (label, required_file, path))
+    except Exception:
+        pass
 
 
 # M3 姿势提取节点（ExtractPoseFromImage / PoseDataToJoints）
@@ -53,6 +67,7 @@ try:
 
     _editor_dir = os.path.join(os.path.dirname(__file__), "web", "editor")
     os.makedirs(_editor_dir, exist_ok=True)
+    _warn_if_empty_dir(_editor_dir, "编辑器静态目录 web/editor", required_file="index.html")
 
     async def _editor_index_no_cache(request):
         return web.FileResponse(
@@ -113,20 +128,30 @@ def _cleanup_stale_uploads():
         if not os.path.isdir(stage_dir):
             return
         deadline = time.time() - _CLEANUP_MAX_AGE_DAYS * 24 * 60 * 60
-        removed = 0
+        # 收集全部 PNG 按 mtime 新→旧排序；最近 _CLEANUP_KEEP_RECENT 份保底不删
+        pngs = []
         for name in os.listdir(stage_dir):
             if not name.lower().endswith(".png"):
                 continue
             path = os.path.join(stage_dir, name)
             try:
-                if os.path.isfile(path) and os.path.getmtime(path) < deadline:
-                    os.remove(path)
-                    removed += 1
+                if os.path.isfile(path):
+                    pngs.append((os.path.getmtime(path), name, path))
+            except Exception as e:
+                _log("警告：读取控制图 %s 状态失败：%s" % (name, e))
+        pngs.sort(reverse=True)
+        removed = 0
+        for mtime, name, path in pngs[_CLEANUP_KEEP_RECENT:]:
+            if mtime >= deadline:
+                continue
+            try:
+                os.remove(path)
+                removed += 1
             except Exception as e:
                 _log("警告：清理旧控制图 %s 失败：%s" % (name, e))
         _log(
-            "启动清理：input/director_stage/ 已删除 %d 张超过 %d 天的旧控制图。"
-            % (removed, _CLEANUP_MAX_AGE_DAYS)
+            "启动清理：input/director_stage/ 已删除 %d 张超过 %d 天的旧控制图（保底保留最近 %d 份）。"
+            % (removed, _CLEANUP_MAX_AGE_DAYS, _CLEANUP_KEEP_RECENT)
         )
     except Exception as e:
         _log("警告：启动清理 input/director_stage 旧文件失败（不影响插件功能）：%s" % e)

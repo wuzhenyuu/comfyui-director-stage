@@ -59,6 +59,21 @@ def _blank_mask(width, height):
     return torch.zeros((1, 1, int(height), int(width)), dtype=torch.float32)
 
 
+def _safe_resolve_path(rel_path):
+    """解析 manifest 相对路径为绝对路径，并约束在 input 目录内（防路径穿越）。
+
+    越界时抛 FileNotFoundError（由调用方兜底为空白图，绝不炸队列）。
+    """
+    path = folder_paths.get_annotated_filepath(rel_path)
+    if not path:
+        return path
+    real = os.path.realpath(path)
+    input_root = os.path.realpath(folder_paths.get_input_directory())
+    if real != input_root and not real.startswith(input_root + os.sep):
+        raise FileNotFoundError("路径越出 input 目录: %s" % rel_path)
+    return real
+
+
 def _load_image(rel_path, width, height, channel):
     """按 manifest 中的相对路径读取 PNG → [1,H,W,3] float tensor。
 
@@ -75,10 +90,16 @@ def _load_image(rel_path, width, height, channel):
             raise RuntimeError("folder_paths 不可用（当前不在 ComfyUI 环境中）")
         if Image is None:
             raise RuntimeError("PIL 不可用，无法读取图像")
-        path = folder_paths.get_annotated_filepath(rel_path)
+        path = _safe_resolve_path(rel_path)
         if not path or not os.path.isfile(path):
             raise FileNotFoundError("文件不存在: %s" % rel_path)
         img = Image.open(path).convert("RGB")
+        if img.size != (int(width), int(height)):
+            _log(
+                "警告：%s 图像实际尺寸 %dx%d 与目标 %dx%d 不一致，已缩放对齐。"
+                % (channel, img.size[0], img.size[1], int(width), int(height))
+            )
+            img = img.resize((int(width), int(height)), Image.BILINEAR)
         arr = np.asarray(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr)[None,]  # [1, H, W, 3]
     except Exception as e:
@@ -102,10 +123,16 @@ def _load_mask(rel_path, width, height, name):
             raise RuntimeError("folder_paths 不可用（当前不在 ComfyUI 环境中）")
         if Image is None:
             raise RuntimeError("PIL 不可用，无法读取图像")
-        path = folder_paths.get_annotated_filepath(rel_path)
+        path = _safe_resolve_path(rel_path)
         if not path or not os.path.isfile(path):
             raise FileNotFoundError("文件不存在: %s" % rel_path)
         img = Image.open(path).convert("L")  # 灰度
+        if img.size != (int(width), int(height)):
+            _log(
+                "警告：角色「%s」的 mask 实际尺寸 %dx%d 与目标 %dx%d 不一致，已缩放对齐。"
+                % (name, img.size[0], img.size[1], int(width), int(height))
+            )
+            img = img.resize((int(width), int(height)), Image.BILINEAR)
         arr = np.asarray(img).astype(np.float32) / 255.0
         # [1, 1, H, W] MASK format
         return torch.from_numpy(arr).unsqueeze(0).unsqueeze(0)
@@ -220,27 +247,101 @@ def _parse_manifest(manifest_str):
         return {}
 
 
+def _safe_int(value):
+    """容错转 int，失败返回 None（manifest 是用户可控输入，绝不抛异常）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clamp_resolution(v):
+    """宽高钳制到 [8, 8192]，防止恶意 manifest 触发巨量分配（OOM/DoS）。"""
+    return max(8, min(int(v), 8192))
+
+
 def _resolve_resolution(manifest_data, camera_data, width, height):
     """从 camera 数据或 manifest 中解析宽高。
 
     优先级：manifest.cameras[i].width/height > manifest.width/height > 节点参数 width/height。
-    如果有 files 顶层级（M1 格式），使用节点参数。
+    非法值静默回退；最终结果钳制到 [8, 8192]。
     """
-    w, h = width, height
-    # 从 camera 取
+    w = _safe_int(width) or 1024
+    h = _safe_int(height) or 1024
+    if isinstance(manifest_data, dict):
+        mw = _safe_int(manifest_data.get("width"))
+        mh = _safe_int(manifest_data.get("height"))
+        if mw:
+            w = mw
+        if mh:
+            h = mh
     if isinstance(camera_data, dict):
-        if camera_data.get("width"):
-            w = int(camera_data["width"])
-        if camera_data.get("height"):
-            h = int(camera_data["height"])
-    if w == width and h == height:
-        # 从 manifest 顶层取
-        if isinstance(manifest_data, dict):
-            if manifest_data.get("width"):
-                w = int(manifest_data["width"])
-            if manifest_data.get("height"):
-                h = int(manifest_data["height"])
-    return w, h
+        cw = _safe_int(camera_data.get("width"))
+        ch = _safe_int(camera_data.get("height"))
+        if cw:
+            w = cw
+        if ch:
+            h = ch
+    return _clamp_resolution(w), _clamp_resolution(h)
+
+
+def _iter_manifest_files(data):
+    """遍历 manifest 引用的所有文件相对路径。
+
+    覆盖：M1 顶层 files、M2 cameras[].files、布局 A cameras[].masks[].file、
+    布局 B 顶层 masks[].file。
+    """
+    paths = []
+    if not isinstance(data, dict):
+        return paths
+
+    def _add(v):
+        if isinstance(v, str) and v.strip():
+            paths.append(v)
+
+    files = data.get("files")
+    if isinstance(files, dict):
+        for v in files.values():
+            _add(v)
+    cameras = data.get("cameras")
+    if isinstance(cameras, list):
+        for cam in cameras:
+            if not isinstance(cam, dict):
+                continue
+            cfiles = cam.get("files")
+            if isinstance(cfiles, dict):
+                for v in cfiles.values():
+                    _add(v)
+            cmasks = cam.get("masks")
+            if isinstance(cmasks, list):
+                for m in cmasks:
+                    if isinstance(m, dict):
+                        _add(m.get("file"))
+    masks = data.get("masks")
+    if isinstance(masks, list):
+        for m in masks:
+            if isinstance(m, dict):
+                _add(m.get("file"))
+    return paths
+
+
+def _hash_manifest_files(hasher, manifest_data):
+    """把 manifest 引用文件的 (name, mtime_ns, size) 纳入哈希。
+
+    编辑器同名覆盖导出时 manifest 字符串不变，靠 mtime/size 破掉陈旧缓存。
+    """
+    if folder_paths is None:
+        return
+    for rel in _iter_manifest_files(manifest_data):
+        try:
+            path = _safe_resolve_path(rel)
+            if path and os.path.isfile(path):
+                st = os.stat(path)
+                hasher.update(("%s:%d:%d;" % (rel, st.st_mtime_ns, st.st_size)).encode("utf-8"))
+            else:
+                hasher.update(("%s:<missing>;" % rel).encode("utf-8"))
+        except Exception:
+            hasher.update(("%s:<error>;" % rel).encode("utf-8"))
 
 
 # ============================================================================
@@ -278,6 +379,7 @@ class DirectorStage:
         h = hashlib.sha256()
         h.update(str(manifest).encode("utf-8"))
         h.update(("%sx%s" % (width, height)).encode("utf-8"))
+        _hash_manifest_files(h, _parse_manifest(manifest))
         return h.hexdigest()
 
     # ------------------------------------------------------------------ run
@@ -322,13 +424,10 @@ class DirectorStage:
         openpose = _load_image(files.get("openpose"), width, height, "openpose")
         depth = _load_image(files.get("depth"), width, height, "depth")
 
-        # 新通道：M1 格式不支持，输出空白图 + 警告
-        if not files.get("normal"):
-            _log("警告：当前为 M1 manifest 格式，不支持 normal 通道，输出空白图像。（请升级到 M2 格式以启用 normal/lineart/char_masks）")
-        if not files.get("lineart"):
-            _log("警告：当前为 M1 manifest 格式，不支持 lineart 通道，输出空白图像。")
-        normal = _load_image(files.get("normal"), width, height, "normal")
-        lineart = _load_image(files.get("lineart"), width, height, "lineart")
+        # 新通道：M1 格式不支持，直接空白图（不走 _load_image，避免重复警告）
+        _log("警告：当前为 M1 manifest 格式，不支持 normal/lineart 通道，输出空白图像。（请升级到 M2 格式以启用 normal/lineart/char_masks）")
+        normal = _blank_image(width, height)
+        lineart = _blank_image(width, height)
 
         char_masks = _blank_mask(width, height)
         _log("提示：M1 manifest 不支持角色 mask，输出空白 mask。")
@@ -373,6 +472,7 @@ class DirectorStageShot:
         h.update(str(manifest).encode("utf-8"))
         h.update(str(camera_index).encode("utf-8"))
         h.update(("%sx%s" % (width, height)).encode("utf-8"))
+        _hash_manifest_files(h, _parse_manifest(manifest))
         return h.hexdigest()
 
     def run(self, scene_gz="", manifest="{}", camera_index=0, width=1024, height=1024):
