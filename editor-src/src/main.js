@@ -12,7 +12,7 @@ import { createOrbit, createTransform, selectJoint, getSelected, setupPointerEve
 import { pushUndo, performUndo, performRedo, getUndoDepth, getRedoDepth, snapshot, restore } from "./undo.js";
 import { encodeSceneGz, decodeSceneGz, applyJoints as sApplyJoints, applyDecodedToManager } from "./serialization.js";
 import * as cameraSettings from "./camera-settings.js";
-import { performApply, performBatchExport } from "./export.js";
+import { performApply, performBatchExport, extractExternalJoints } from "./export.js";
 import { renderOpenPoseCanvas, renderDepthCanvas, renderNormalCanvas } from "./pass-renderer.js";
 import { setupProtocol, announceReady, getExportSize, getSceneJSON, setSceneJSON } from "./protocol.js";
 import { mirrorPose } from "./pose-panel.js";
@@ -37,6 +37,20 @@ import { mountControlsGlobals } from "./controls.js";
 import { mountThumbnailCapture } from "./thumbnail-capture.js";
 import { createBoneEditor } from "./bone-editor.js";
 import { serialize as serializePosePresets, restore as restorePosePresets } from "./pose-presets.js";
+import * as panorama from "./panorama.js";
+import * as openposeImport from "./openpose-import.js";
+
+// ── P8：骨骼视图模式（TE_MAN 式黑底彩色 OpenPose 骨骼人偶）全局开关与钩子 ──
+// scene.js drawFrame 每帧读 window.__ds_skeletonMode；UI 复选框与 __ds 契约共用此 setter。
+window.__ds_skeletonMode = false;
+window.__ds_setSkeletonMode = (on) => {
+  window.__ds_skeletonMode = on === true;
+  window.dispatchEvent(new CustomEvent("ds-skeleton-mode-changed", {
+    detail: { enabled: window.__ds_skeletonMode },
+  }));
+};
+// scene.js 不 import export.js（会循环依赖），经钩子取外部角色 18 关节世界坐标
+window.__ds_getExternalJoints18 = (entry) => extractExternalJoints(entry);
 
 /* ========================= DOM 引用 ========================= */
 
@@ -457,6 +471,28 @@ function injectTopbarControls() {
     skeletonCheckbox.checked = e.detail?.enabled !== false;
   });
 
+  // ── P8：骨骼视图模式开关（TE_MAN 式：黑底彩色 OpenPose 骨骼人偶替换 3D 角色网格；
+  //    视觉隐藏 ≠ 数据删除，角色/场景状态保留，切回即恢复）──
+  const skeletonModeLabel = document.createElement("label");
+  skeletonModeLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  skeletonModeLabel.title = "骨骼模式：隐藏 3D 角色网格，以黑底彩色 OpenPose 骨骼人偶查看/编辑（IK 球仍可拖拽）";
+  const skeletonModeCheckbox = document.createElement("input");
+  skeletonModeCheckbox.type = "checkbox";
+  skeletonModeCheckbox.id = "skeletonModeCheckbox";
+  skeletonModeCheckbox.checked = window.__ds_skeletonMode === true;
+  skeletonModeCheckbox.style.cssText = "accent-color:#2f9e63;";
+  skeletonModeCheckbox.addEventListener("change", () => {
+    window.__ds_setSkeletonMode(skeletonModeCheckbox.checked);
+    showToast(skeletonModeCheckbox.checked
+      ? "🦴骨骼模式已开启（3D角色已隐藏，黑底骨骼视图）"
+      : "🦴骨骼模式已关闭（恢复3D角色）", false);
+  });
+  skeletonModeLabel.appendChild(skeletonModeCheckbox);
+  skeletonModeLabel.appendChild(document.createTextNode("🦴骨骼模式"));
+  window.addEventListener("ds-skeleton-mode-changed", (e) => {
+    skeletonModeCheckbox.checked = e.detail?.enabled === true;
+  });
+
   // 使用模块级 externalManager / characterMode 状态（renderLoop 与 VRM 回调共享）
 
   function updateExtButtonsUI() {
@@ -719,6 +755,134 @@ function injectTopbarControls() {
   hidePropsLabel.appendChild(hidePropsCheckbox);
   hidePropsLabel.appendChild(document.createTextNode("👁️隐藏道具"));
 
+  // ── P4：全景图 ──
+  // 全景模式开关
+  const panoLabel = document.createElement("label");
+  panoLabel.style.cssText = "display:flex;align-items:center;gap:3px;font-size:12px;color:#8a90a0;cursor:pointer;margin:0 4px;";
+  const panoCheckbox = document.createElement("input");
+  panoCheckbox.type = "checkbox";
+  panoCheckbox.style.cssText = "accent-color:#e8962f;";
+  panoCheckbox.addEventListener("change", () => {
+    panorama.setEnabled(panoCheckbox.checked);
+    showToast(panoCheckbox.checked ? "🌐全景模式已开启（相机锁定原点，仅旋转）" : "🎬自由视角已恢复", false);
+  });
+  panoLabel.appendChild(panoCheckbox);
+  panoLabel.appendChild(document.createTextNode("🌐全景"));
+
+  // 全景图上传按钮
+  const panoUploadBtn = document.createElement("button");
+  panoUploadBtn.textContent = "🖼️全景图";
+  panoUploadBtn.title = "上传等距柱状全景图（建议 2:1 比例）";
+  panoUploadBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  const panoFileInput = document.createElement("input");
+  panoFileInput.type = "file";
+  panoFileInput.accept = "image/png,image/jpeg,image/webp";
+  panoFileInput.style.display = "none";
+  panoFileInput.addEventListener("change", async () => {
+    const file = panoFileInput.files[0];
+    if (!file) return;
+    panoUploadBtn.disabled = true;
+    panoUploadBtn.textContent = "⏳加载…";
+    try {
+      const url = URL.createObjectURL(file);
+      await panorama.load(url, scene);
+      panorama.setEnabled(true);
+      panoCheckbox.checked = true;
+      showToast("🌐全景图已加载", false);
+    } catch (e) {
+      showToast("全景图加载失败：" + (e.message || e), true);
+    } finally {
+      panoUploadBtn.disabled = false;
+      panoUploadBtn.textContent = "🖼️全景图";
+    }
+  });
+  panoUploadBtn.addEventListener("click", () => panoFileInput.click());
+  document.body.appendChild(panoFileInput);
+
+  // 全景旋转滑杆
+  const panoRotGroup = document.createElement("span");
+  panoRotGroup.id = "pano-rot-group";
+  panoRotGroup.style.cssText = "display:none;align-items:center;gap:4px;margin:0 4px;";
+  const panoRotSlider = document.createElement("input");
+  panoRotSlider.type = "range";
+  panoRotSlider.min = "-180";
+  panoRotSlider.max = "180";
+  panoRotSlider.value = "0";
+  panoRotSlider.style.cssText = "width:60px;accent-color:#e8962f;";
+  panoRotSlider.addEventListener("input", () => {
+    panorama.setRotation(parseInt(panoRotSlider.value) * Math.PI / 180);
+  });
+  panoRotGroup.appendChild(document.createTextNode("↻"));
+  panoRotGroup.appendChild(panoRotSlider);
+
+  // 全景距离滑杆
+  const panoDistGroup = document.createElement("span");
+  panoDistGroup.id = "pano-dist-group";
+  panoDistGroup.style.cssText = "display:none;align-items:center;gap:4px;margin:0 4px;";
+  const panoDistLabel = document.createElement("span");
+  panoDistLabel.textContent = "5m";
+  panoDistLabel.style.cssText = "font-size:11px;color:#c8a65c;min-width:24px;";
+  const panoDistSlider = document.createElement("input");
+  panoDistSlider.type = "range";
+  panoDistSlider.min = "1.5";
+  panoDistSlider.max = "10";
+  panoDistSlider.step = "0.1";
+  panoDistSlider.value = "5";
+  panoDistSlider.style.cssText = "width:60px;accent-color:#e8962f;";
+  panoDistSlider.addEventListener("input", () => {
+    const v = parseFloat(panoDistSlider.value);
+    panorama.setDistance(v);
+    panoDistLabel.textContent = v.toFixed(1) + "m";
+  });
+  panoDistGroup.appendChild(document.createTextNode("📏"));
+  panoDistGroup.appendChild(panoDistLabel);
+  panoDistGroup.appendChild(panoDistSlider);
+
+  // 状态变更时同步 UI
+  panorama.setStateChangeCallback((s) => {
+    panoCheckbox.checked = s.enabled;
+    panoRotGroup.style.display = s.enabled && s.path ? "flex" : "none";
+    panoDistGroup.style.display = s.enabled && s.path ? "flex" : "none";
+  });
+
+  // ── P4：OpenPose 骨骼图导入 ──
+  const poseImportBtn = document.createElement("button");
+  poseImportBtn.textContent = "🦴导入骨骼图";
+  poseImportBtn.title = "从 OpenPose 骨骼图导入姿势（自动识别 BODY_18 关节点并映射到 3D 角色）";
+  poseImportBtn.style.cssText = "padding:6px 10px;font-size:12px;";
+  const poseFileInput = document.createElement("input");
+  poseFileInput.type = "file";
+  poseFileInput.accept = "image/png,image/jpeg,image/webp";
+  poseFileInput.style.display = "none";
+  poseFileInput.addEventListener("change", async () => {
+    const file = poseFileInput.files[0];
+    if (!file) return;
+    poseImportBtn.disabled = true;
+    poseImportBtn.textContent = "⏳解析中…";
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+      });
+      const result = await openposeImport.importPose(
+        file, externalManager, img.width, img.height,
+        { facingAngle: 0, rootY: 0 }
+      );
+      const detected = result.joints.filter(Boolean).length;
+      showToast(`🦴已导入姿势（${detected}/18 关节检测成功）`, false);
+    } catch (e) {
+      console.error("[OpenPose导入]", e);
+      showToast("骨骼图导入失败：" + (e.message || e), true);
+    } finally {
+      poseImportBtn.disabled = false;
+      poseImportBtn.textContent = "🦴导入骨骼图";
+    }
+  });
+  poseImportBtn.addEventListener("click", () => poseFileInput.click());
+  document.body.appendChild(poseFileInput);
+
   // ── Undo/Redo 按钮 ──
   const undoBtn = document.createElement("button");
   undoBtn.textContent = "↩️";
@@ -827,6 +991,11 @@ function injectTopbarControls() {
   });
 
   // Insert all after btnCancel
+  afterBtn.insertAdjacentElement("afterend", poseImportBtn);
+  afterBtn.insertAdjacentElement("afterend", panoDistGroup);
+  afterBtn.insertAdjacentElement("afterend", panoRotGroup);
+  afterBtn.insertAdjacentElement("afterend", panoUploadBtn);
+  afterBtn.insertAdjacentElement("afterend", panoLabel);
   afterBtn.insertAdjacentElement("afterend", modeBtn);
   afterBtn.insertAdjacentElement("afterend", pasteBtn);
   afterBtn.insertAdjacentElement("afterend", copyBtn);
@@ -842,6 +1011,7 @@ function injectTopbarControls() {
   afterBtn.insertAdjacentElement("afterend", wireLabel);
   afterBtn.insertAdjacentElement("afterend", addExtBtn);
   afterBtn.insertAdjacentElement("afterend", skeletonLabel);
+  afterBtn.insertAdjacentElement("afterend", skeletonModeLabel);
   afterBtn.insertAdjacentElement("afterend", thirdsLabel);
   afterBtn.insertAdjacentElement("afterend", focalGroup);
 
@@ -1025,6 +1195,11 @@ setupProtocol((w, h, jointsArr, sceneData, decodedScene) => {
     console.log(`[3D导演台] 已恢复 ${sceneData.posePresets.length} 个姿态预设`);
   }
 
+  // 全景图恢复
+  if (sceneData?.panorama) {
+    panorama.restore(sceneData.panorama, scene);
+  }
+
   updateBones(_dsRef.joints, _dsRef.bones);
   cameraSettings.updateOverlay();
   updateStatus();
@@ -1072,10 +1247,11 @@ async function onApply() {
       // P3-2：导出后恢复骨骼标记/Gizmo
       boneEditor.endExport();
 
-      // Post manifest
+      // Post manifest（安全：使用协议层解析的父窗口 origin）
+      const origin = window.__ds?._protocolOrigin || location.origin;
       window.parent.postMessage(
         { type: "exportDone", payload: { manifest: result.manifest, sceneGz, sceneJSON } },
-        "*"
+        origin
       );
     } else {
       // Single camera, single character: use M1-compatible export
@@ -1169,6 +1345,7 @@ function buildSceneJSON(sceneGz) {
     cameras,
     props: Array.isArray(data.props) ? data.props : propManager.snapshot(),
     posePresets: serializePosePresets(),
+    panorama: panorama.serialize(),
     focalLength: cameraSettings.getFocalLength(),
     sceneGz,
   };
@@ -1176,7 +1353,9 @@ function buildSceneJSON(sceneGz) {
 
 btnApply.addEventListener("click", onApply);
 btnCancel.addEventListener("click", () => {
-  window.parent.postMessage({ type: "cancel" }, "*");
+  // 安全：使用协议层解析的父窗口 origin，回退同源
+  const origin = window.__ds?._protocolOrigin || location.origin;
+  window.parent.postMessage({ type: "cancel" }, origin);
 });
 
 /* ========================= 状态栏 ========================= */
@@ -1394,6 +1573,20 @@ const _dsRef = {
   },
 
   wireframeMode: (enabled) => setWireframeMode(enabled),
+
+  // P8：骨骼视图模式（TE_MAN 式黑底彩色 OpenPose 骨骼人偶）
+  get skeletonMode() { return window.__ds_skeletonMode === true; },
+  setSkeletonMode: (on) => window.__ds_setSkeletonMode(on),
+
+  // P4：全景图 & OpenPose 导入
+  get panorama() { return panorama; },
+  get openposeImport() { return openposeImport; },
+  togglePanorama: () => panorama.toggle(),
+  importOpenPose: async (file) => {
+    const img = new Image();
+    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = URL.createObjectURL(file); });
+    return openposeImport.importPose(file, externalManager, img.width, img.height);
+  },
 };
 
 // P3-2：保存其他模块（如 pose-presets.js）在 main.js 之前注入的 __ds 属性
@@ -1436,33 +1629,47 @@ applyViewport(viewportEl);
 updateStatus();
 
 // GLB IK 求解函数（驱动 UE mannequin 骨骼）
+const _detWorld = new THREE.Matrix4();
+const _detLocal = new THREE.Matrix4();
+
 function solveGLB_IK(data) {
   const { jointMap, ikTargets, allBones } = data;
   if (!jointMap || !ikTargets) return;
 
-  // 脚钉地
-  if (!data._rootPrev) {
-    const rootBone = jointMap.get(1); // Neck
-    if (rootBone) {
-      data._rootPrev = new THREE.Vector3();
-      rootBone.getWorldPosition(data._rootPrev);
-    }
-  } else {
-    const rootBone = jointMap.get(1);
-    if (rootBone) {
-      const nowPos = new THREE.Vector3();
-      rootBone.getWorldPosition(nowPos);
-      const delta = nowPos.clone().sub(data._rootPrev);
-      if (delta.length() > 0.001) {
-        for (const leg of ["rightLeg", "leftLeg"]) {
-          if (ikTargets[leg]) {
-            ikTargets[leg].target.position.sub(delta);
-            ikTargets[leg].pole.position.sub(delta);
+  // 检查是否有程序化动作正在播放（非 clip）——播放中跳过脚钉地，
+  // 否则骨盆动画（walk/jump/idle呼吸）会被脚钉地反向抵消，
+  // 导致走路腿不动、跳跃不腾空等"动作不对"的现象。
+  const actionState = actionRuntime?.states?.get(data.id);
+  const playingAction = actionState?.playing && !actionState?.isClip;
+
+  // 脚钉地（仅非动作播放时生效，保持 IK 拖拽时的站姿稳定）
+  if (!playingAction) {
+    if (!data._rootPrev) {
+      const rootBone = jointMap.get(1); // Neck
+      if (rootBone) {
+        data._rootPrev = new THREE.Vector3();
+        rootBone.getWorldPosition(data._rootPrev);
+      }
+    } else {
+      const rootBone = jointMap.get(1);
+      if (rootBone) {
+        const nowPos = new THREE.Vector3();
+        rootBone.getWorldPosition(nowPos);
+        const delta = nowPos.clone().sub(data._rootPrev);
+        if (delta.length() > 0.001) {
+          for (const leg of ["rightLeg", "leftLeg"]) {
+            if (ikTargets[leg]) {
+              ikTargets[leg].target.position.sub(delta);
+              ikTargets[leg].pole.position.sub(delta);
+            }
           }
         }
+        data._rootPrev.copy(nowPos);
       }
-      data._rootPrev.copy(nowPos);
     }
+  } else {
+    // 动作播放中：清除脚钉地缓存，动作停止后重新从当前姿势初始化
+    data._rootPrev = null;
   }
 
   // IK 求解四链
@@ -1480,14 +1687,33 @@ function solveGLB_IK(data) {
     if (chainBones.length < 3) continue;
 
     solveGLB_CCD(chainBones, target.target.position, target.pole.position);
+
+    // 扁平骨架修补：末端骨不在链条内（如 Rigify 的 Foot 挂根骨）时，
+    // CCD 转不动它——按绑定偏移矩阵手动贴回中段骨
+    const det = data.detachedEnds?.[name];
+    const snap = det ? () => snapDetachedEnd(det) : null;
+    if (det) snap();
+
+    solveGLB_CCD(chainBones, target.target.position, target.pole.position, 10, 0.001, snap);
+
+    if (det) snap();
   }
 
   // 刷新骨骼世界矩阵
   allBones.forEach(b => b.updateMatrixWorld());
 }
 
-// 简化 CCD IK（针对 GLB 骨骼）
-function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001) {
+// 扁平骨架修补：把脱离链条的末端骨按绑定偏移贴回中段骨（每次骨骼旋转后调用）
+function snapDetachedEnd(det) {
+  det.mid.updateWorldMatrix(true, false);
+  _detWorld.copy(det.mid.matrixWorld).multiply(det.offsetMatrix);
+  _detLocal.copy(det.end.parent.matrixWorld).invert().multiply(_detWorld);
+  _detLocal.decompose(det.end.position, det.end.quaternion, det.end.scale);
+  det.end.updateMatrixWorld(true);
+}
+
+// 简化 CCD IK（针对 GLB 骨骼）。snapEnd：可选回调，在每次量测末端前调用（扁平骨架贴脚）
+function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001, snapEnd = null) {
   const [root, mid, end] = chainBones;
   const ev = new THREE.Vector3();
   const bv = new THREE.Vector3();
@@ -1495,26 +1721,37 @@ function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001)
   const q = new THREE.Quaternion();
 
   for (let iter = 0; iter < maxIter; iter++) {
+    snapEnd?.();
     end.getWorldPosition(ev);
     if (ev.distanceTo(targetPos) < tol) break;
 
-    // 旋转 mid
+    // 旋转 mid — 保护：骨骼与目标重合时跳过（避免 NaN 四元数）
     mid.getWorldPosition(bv);
-    dv.copy(targetPos).sub(bv).normalize();
-    ev.sub(bv).normalize();
+    dv.copy(targetPos).sub(bv);
+    if (dv.lengthSq() < 1e-10) continue;
+    dv.normalize();
+    ev.sub(bv);
+    if (ev.lengthSq() < 1e-10) continue;
+    ev.normalize();
     q.setFromUnitVectors(ev, dv);
     applyWorldRotation(mid, q);
 
+    snapEnd?.();
     end.getWorldPosition(ev);
     if (ev.distanceTo(targetPos) < tol) break;
 
     // 旋转 root
     root.getWorldPosition(bv);
-    dv.copy(targetPos).sub(bv).normalize();
-    ev.sub(bv).normalize();
+    dv.copy(targetPos).sub(bv);
+    if (dv.lengthSq() < 1e-10) continue;
+    dv.normalize();
+    ev.sub(bv);
+    if (ev.lengthSq() < 1e-10) continue;
+    ev.normalize();
     q.setFromUnitVectors(ev, dv);
     applyWorldRotation(root, q);
   }
+  snapEnd?.();
 
   // Pole 约束
   if (polePos) {
@@ -1557,29 +1794,37 @@ function solveVRM_IK(data) {
   const { jointMap, ikTargets, allBones } = data;
   if (!jointMap || !ikTargets) return;
 
-  // 脚钉地（与 GLB 逻辑一致）
-  if (!data._rootPrev) {
-    const rootBone = jointMap.get(1); // Neck
-    if (rootBone) {
-      data._rootPrev = new THREE.Vector3();
-      rootBone.getWorldPosition(data._rootPrev);
-    }
-  } else {
-    const rootBone = jointMap.get(1);
-    if (rootBone) {
-      const nowPos = new THREE.Vector3();
-      rootBone.getWorldPosition(nowPos);
-      const delta = nowPos.clone().sub(data._rootPrev);
-      if (delta.length() > 0.001) {
-        for (const leg of ["rightLeg", "leftLeg"]) {
-          if (ikTargets[leg]) {
-            ikTargets[leg].target.position.sub(delta);
-            ikTargets[leg].pole.position.sub(delta);
+  // 动作播放中跳过脚钉地（同 solveGLB_IK）
+  const actionState = actionRuntime?.states?.get(data.id);
+  const playingAction = actionState?.playing && !actionState?.isClip;
+
+  if (!playingAction) {
+    // 脚钉地（与 GLB 逻辑一致）
+    if (!data._rootPrev) {
+      const rootBone = jointMap.get(1); // Neck
+      if (rootBone) {
+        data._rootPrev = new THREE.Vector3();
+        rootBone.getWorldPosition(data._rootPrev);
+      }
+    } else {
+      const rootBone = jointMap.get(1);
+      if (rootBone) {
+        const nowPos = new THREE.Vector3();
+        rootBone.getWorldPosition(nowPos);
+        const delta = nowPos.clone().sub(data._rootPrev);
+        if (delta.length() > 0.001) {
+          for (const leg of ["rightLeg", "leftLeg"]) {
+            if (ikTargets[leg]) {
+              ikTargets[leg].target.position.sub(delta);
+              ikTargets[leg].pole.position.sub(delta);
+            }
           }
         }
+        data._rootPrev.copy(nowPos);
       }
-      data._rootPrev.copy(nowPos);
     }
+  } else {
+    data._rootPrev = null;
   }
 
   // IK 求解四链（复用 solveGLB_CCD）
@@ -1604,69 +1849,105 @@ function solveVRM_IK(data) {
 
 // 动画循环：2D Canvas 渲染（零 WebGL 依赖）
 let _lastFrameTs = 0;
+let _renderLoopErrorCount = 0;
 function renderLoop(ts) {
-  // P3-0：帧间隔（动作采样用），首帧/异常值保护
-  const dt = _lastFrameTs ? (ts - _lastFrameTs) / 1000 : 0.016;
-  _lastFrameTs = ts || performance.now();
+  try {
+    // P3-0：帧间隔（动作采样用），首帧/异常值保护
+    const dt = _lastFrameTs ? (ts - _lastFrameTs) / 1000 : 0.016;
+    _lastFrameTs = ts || performance.now();
 
-  // 更新 OrbitControls 的相机（用于关节投影计算）
-  orbit.update();
-  // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
-  scene.updateMatrixWorld();
-  const ac = cameraManager.getActiveCamera();
-  if (ac) {
-    ac.pos = ac.camera.position.toArray();
-    ac.target = orbit.target.toArray();
-  }
-  
-  // FK模式更新骨骼
-  updateBones(joints, bones);
+    // 更新 OrbitControls 的相机（用于关节投影计算）
+    if (panorama.isEnabled()) {
+      // 全景模式：相机锁原点，仅旋转（距离用极微小值保持球坐标正常运算）
+      orbit.target.set(0, 1.5, 0);
+      orbit.enablePan = false;
+      orbit.minDistance = 0.01;
+      orbit.maxDistance = 0.01;
+      orbit.update();
+      // 强制相机归位（orbit minDistance=0.01 保证球坐标非退化）
+      defaultCamera.position.set(0, 1.5, 0);
+      if (ac && ac.camera !== defaultCamera) {
+        ac.camera.position.copy(defaultCamera.position);
+      }
+    } else {
+      orbit.enablePan = true;
+      orbit.minDistance = 0.5;
+      orbit.maxDistance = 20;
+      orbit.update();
+    }
+    // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
+    scene.updateMatrixWorld();
+    const ac = cameraManager.getActiveCamera();
+    if (ac) {
+      ac.pos = ac.camera.position.toArray();
+      ac.target = orbit.target.toArray();
+    }
+    
+    // FK模式更新骨骼
+    updateBones(joints, bones);
 
-  // P3-1 3D-only：火柴人永久隐藏（防御性每帧压制——restore/setActive/导入等路径可能重新点亮）
-  figureGroup.visible = false;
-  const stickMgr = window.DS_FigureAPI?.getManager?.();
-  if (stickMgr) {
-    if (stickMgr.ikTargetsGroup) stickMgr.ikTargetsGroup.visible = false;
-    for (const ch of stickMgr.characters.values()) {
-      if (ch.skeletonGroup && ch.skeletonGroup.visible) ch.skeletonGroup.visible = false;
+    // P3-1 3D-only：火柴人永久隐藏（防御性每帧压制——restore/setActive/导入等路径可能重新点亮）
+    figureGroup.visible = false;
+    const stickMgr = window.DS_FigureAPI?.getManager?.();
+    if (stickMgr) {
+      if (stickMgr.ikTargetsGroup) stickMgr.ikTargetsGroup.visible = false;
+      for (const ch of stickMgr.characters.values()) {
+        if (ch.skeletonGroup && ch.skeletonGroup.visible) ch.skeletonGroup.visible = false;
+      }
+    }
+    // P3-1：同步 3D角色身体拾取 proxy（整体移动的点选目标）
+    bodyMover.syncProxies();
+
+    // P3-2：骨骼编辑模式每帧更新（投影/标记/Gizmo 相机）
+    boneEditor.update();
+
+    // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
+    actionRuntime.tick(dt);
+    // P3-0：骨骼显示 —— 补齐/清理 SkeletonHelper 并同步可见性
+    skeletonHelpers.syncAll();
+    
+    // 渲染主链路：WebGL 模式走真实 3D 渲染；失败当帧回退 2D；
+    // drawFrame 两种模式都调用——webgl 下内部仅填拾取缓存不绘制（2D canvas 作透明交互层）。
+    const camRef = ac ? ac.camera : defaultCamera;
+    // 全景模式：同步场景背景
+    panorama.syncSceneBackground(scene);
+    if (renderMode.isWebGL()) {
+      if (!renderViewportWebGL(camRef)) renderMode.fallbackTo2D("渲染帧异常");
+    }
+    drawFrame(figureGroup, joints, camRef, window.__ds?.fkMode);
+    
+    // P1.5b 性能优化：IK 不再全员每帧求解。
+    // - 活动角色：每帧解（拖拽 IK 球时必须实时）
+    // - 非活动角色：仅在 _ikDirty（添加/恢复/模式切换/激活）时补解一次
+    if (characterMode !== "stick") {
+      const activeId = externalManager.activeCharacterId;
+      for (const entry of externalManager.characters.values()) {
+        if (!entry.model || entry.model.visible === false || !entry.jointMap || !entry.ikTargets) continue;
+        // P3-2：骨骼编辑 applyPoseBones 后跳过几帧 IK，避免 solver 覆盖刚写入的骨骼
+        if (entry._skipIKFrames > 0) { entry._skipIKFrames--; continue; }
+        // P3-2：clip 动画播放期间骨骼由 AnimationMixer 驱动，IK 冻结不得覆写
+        if (entry._clipPlaying) continue;
+        const mustSolve = entry.id === activeId || entry._ikDirty;
+        if (!mustSolve) continue;
+        if (entry.type === "vrm") solveVRM_IK(entry);
+        else solveGLB_IK(entry);
+        entry._ikDirty = false;
+      }
+    }
+    
+    // 重置错误计数（连续成功帧后清零）
+    if (_renderLoopErrorCount > 0) _renderLoopErrorCount = 0;
+  } catch (e) {
+    _renderLoopErrorCount++;
+    console.error("[3D导演台] renderLoop 异常 (第" + _renderLoopErrorCount + "次):", e);
+    // 连续异常 > 60 帧（~1秒）则提示用户并暂停错误日志
+    if (_renderLoopErrorCount === 60) {
+      showToast("⚠️ 渲染异常频繁，建议刷新页面", true);
+    } else if (_renderLoopErrorCount > 600) {
+      // 持续 10 秒以上异常，停止日志洪水
+      if (_renderLoopErrorCount === 601) console.error("[3D导演台] renderLoop 持续异常，日志已抑制");
     }
   }
-  // P3-1：同步 3D角色身体拾取 proxy（整体移动的点选目标）
-  bodyMover.syncProxies();
-
-  // P3-2：骨骼编辑模式每帧更新（投影/标记/Gizmo 相机）
-  boneEditor.update();
-
-  // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
-  actionRuntime.tick(dt);
-  // P3-0：骨骼显示 —— 补齐/清理 SkeletonHelper 并同步可见性
-  skeletonHelpers.syncAll();
-  
-  // 渲染主链路：WebGL 模式走真实 3D 渲染；失败当帧回退 2D；
-  // drawFrame 两种模式都调用——webgl 下内部仅填拾取缓存不绘制（2D canvas 作透明交互层）。
-  const camRef = ac ? ac.camera : defaultCamera;
-  if (renderMode.isWebGL()) {
-    if (!renderViewportWebGL(camRef)) renderMode.fallbackTo2D("渲染帧异常");
-  }
-  drawFrame(figureGroup, joints, camRef, window.__ds?.fkMode);
-  
-  // P1.5b 性能优化：IK 不再全员每帧求解。
-  // - 活动角色：每帧解（拖拽 IK 球时必须实时）
-  // - 非活动角色：仅在 _ikDirty（添加/恢复/模式切换/激活）时补解一次
-  if (characterMode !== "stick") {
-    const activeId = externalManager.activeCharacterId;
-    for (const entry of externalManager.characters.values()) {
-      if (!entry.model || entry.model.visible === false || !entry.jointMap || !entry.ikTargets) continue;
-      // P3-2：骨骼编辑 applyPoseBones 后跳过几帧 IK，避免 solver 覆盖刚写入的骨骼
-      if (entry._skipIKFrames > 0) { entry._skipIKFrames--; continue; }
-      const mustSolve = entry.id === activeId || entry._ikDirty;
-      if (!mustSolve) continue;
-      if (entry.type === "vrm") solveVRM_IK(entry);
-      else solveGLB_IK(entry);
-      entry._ikDirty = false;
-    }
-  }
-  
   requestAnimationFrame(renderLoop);
 }
 requestAnimationFrame(renderLoop);

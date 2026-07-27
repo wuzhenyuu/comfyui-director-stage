@@ -8,6 +8,9 @@ import { setFocalLength } from "./camera-settings.js";
 let exportW = 512;
 let exportH = 768;
 
+/** 父窗口 origin（setupProtocol 时解析），用于 postMessage 安全校验 */
+let _parentOrigin = null;
+
 /** M2 场景 JSON（序列化多相机、道具等，兼容 M1） */
 let sceneJSON = null;
 
@@ -29,6 +32,15 @@ export function setSceneJSON(v) {
  *   sceneData: { focalLength?, cameras?, props? }  (M2 扩展)
  */
 export function setupProtocol(onInit) {
+  // 从 referrer 安全解析父窗口 origin（避免 postMessage "*" 通配符风险）
+  try {
+    if (document.referrer) {
+      const refUrl = new URL(document.referrer);
+      _parentOrigin = refUrl.origin;
+    }
+  } catch { /* referrer 不可解析时回退同源校验 */ }
+  if (!_parentOrigin) _parentOrigin = location.origin;
+
   window.addEventListener("message", (ev) => {
     if (ev.origin !== location.origin) return;
     const data = ev.data;
@@ -77,5 +89,8 @@ export function setupProtocol(onInit) {
 }
 
 export function announceReady() {
-  window.parent.postMessage({ type: "ready" }, "*");
+  const origin = _parentOrigin || location.origin;
+  // 暴露给 main.js 等其他模块使用
+  if (window.__ds) window.__ds._protocolOrigin = origin;
+  window.parent.postMessage({ type: "ready" }, origin);
 }

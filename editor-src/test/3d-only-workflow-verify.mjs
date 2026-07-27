@@ -384,13 +384,27 @@ if (!bodyPt.ok) {
 }
 
 // ================= 契约 6：连续添加第 2/3 个 3D角色 =================
-async function clickAddGLB() {
+// P7：点「添加3D角色」弹出模型选择器，需再选一个模型才真正加载
+async function pickModelFromPicker() {
+  const ok = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (!ok) return false;
   return page.evaluate(() => {
-    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("添加GLB"));
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (!rows.length) return false;
+    rows[0].click();
+    return true;
+  });
+}
+async function clickAddGLB() {
+  const clicked = await page.evaluate(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => (b.textContent.includes("添加3D角色") || b.textContent.includes("添加GLB")));
     if (!btn) return false;
     btn.click();
     return true;
   });
+  if (!clicked) return false;
+  return pickModelFromPicker();
 }
 const clicked2 = await clickAddGLB();
 check("契约6a 找到并点击「添加GLB」（第 2 个）", clicked2,

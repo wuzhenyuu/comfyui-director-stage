@@ -269,6 +269,14 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
   const h = canvas2d.clientHeight || canvas2d.height / 2;
   if (w <= 0 || h <= 0) return;
 
+  // ── P8：骨骼视图模式（TE_MAN 式）—— 黑底彩色 OpenPose 骨骼人偶。
+  // 2D canvas 恒为最上层：不透明黑底直接盖住 WebGL 视图中的 3D 角色网格
+  // （视觉隐藏 ≠ 数据删除：角色/场景状态不动，切回即恢复）；IK 球保持可拖。
+  if (window.__ds_skeletonMode === true) {
+    drawSkeletonModeFrame(cameraRef, w, h);
+    return;
+  }
+
   // 清屏（坐标系已 scale(2,2)，用 CSS 像素）
   ctx2d.clearRect(0, 0, w, h);
 
@@ -343,6 +351,103 @@ export function drawFrame(figureGroup, joints, cameraRef, fkMode) {
     ctx2d.fillStyle = "#ff4444";
     ctx2d.fill();
   }
+}
+
+/**
+ * P8：骨骼视图模式整帧绘制 —— 黑底 + BODY_18 标准色骨骼人偶 + 道具线框 + IK 目标。
+ *
+ * 与导出的 openpose 通道（pass-renderer.renderOpenPoseCanvas）同一套
+ * COCO limbSeq + 17 色彩色调色板，视口所见即导出所得。
+ * 忽略 paint2dEnabled：WebGL 模式下 2D canvas 也是最上层，需不透明覆盖。
+ */
+function drawSkeletonModeFrame(cameraRef, w, h) {
+  // 不透明黑底（盖住下层 WebGL 视图里的 3D 角色网格）
+  ctx2d.fillStyle = "#000000";
+  ctx2d.fillRect(0, 0, w, h);
+
+  // 每帧重置屏幕拾取缓存
+  window.__ds_jointScreen = [];
+
+  if (!cameraRef) return;
+
+  // 骨骼模式下恒绘制（临时打开绘制开关，帧尾恢复）
+  const savedPaint = paint2dEnabled;
+  paint2dEnabled = true;
+
+  // 道具仍投影绘制（构图参考 + 拾取缓存）
+  drawProps2D(cameraRef, w, h);
+
+  // BODY_18 / COCO limbSeq（与 drawStickFigure / renderOpenPoseCanvas 一致）
+  const limbSeq = [
+    [1,2],[1,5],[2,3],[3,4],[5,6],[6,7],[1,8],[8,9],[9,10],
+    [1,11],[11,12],[12,13],[1,0],[0,14],[14,16],[0,15],[15,17]
+  ];
+  // OpenPose 标准 17 色（与 pass-renderer renderOpenPoseCanvas 相同）
+  const limbColors = [
+    [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0],
+    [85, 255, 0], [0, 255, 85], [0, 255, 170], [0, 255, 255],
+    [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255],
+    [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85],
+    [255, 0, 0],
+  ];
+
+  const mgr = window.__ds?.externalCharacters;
+  const entries = mgr && typeof mgr.getAll === "function" ? mgr.getAll() : [];
+  const getJoints18 = window.__ds_getExternalJoints18;
+  const s = Math.min(w, h) / 512;
+  const _v = new THREE.Vector3();
+
+  for (const entry of entries) {
+    if (!entry || entry.visible === false) continue;
+    if (entry.model && entry.model.visible === false) continue;
+    if (typeof getJoints18 !== "function") break;
+
+    let joints18 = null;
+    try {
+      joints18 = getJoints18(entry); // THREE.Vector3[18] 世界坐标（缺关节为零向量）
+    } catch (e) { continue; }
+    if (!Array.isArray(joints18) || joints18.length < 18) continue;
+
+    const pts = joints18.map((j) => {
+      _v.copy(j).project(cameraRef);
+      return {
+        x: (_v.x + 1) / 2 * w,
+        y: (1 - _v.y) / 2 * h,
+        behind: _v.z > 1,
+        // 缺关节填的零向量不参与绘制（原点恰好全零的概率可忽略）
+        missing: j.x === 0 && j.y === 0 && j.z === 0,
+      };
+    });
+
+    // 画肢（OpenPose 彩色）
+    ctx2d.lineCap = "round";
+    limbSeq.forEach(([a, b], i) => {
+      const pa = pts[a], pb = pts[b];
+      if (pa.behind || pb.behind || pa.missing || pb.missing) return;
+      const c = limbColors[i % limbColors.length];
+      ctx2d.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx2d.lineWidth = 3 * s;
+      ctx2d.beginPath();
+      ctx2d.moveTo(pa.x, pa.y);
+      ctx2d.lineTo(pb.x, pb.y);
+      ctx2d.stroke();
+    });
+
+    // 画关节点
+    pts.forEach((p, i) => {
+      if (p.behind || p.missing) return;
+      const c = limbColors[i % limbColors.length];
+      ctx2d.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+      ctx2d.beginPath();
+      ctx2d.arc(p.x, p.y, 3.5 * s, 0, Math.PI * 2);
+      ctx2d.fill();
+    });
+  }
+
+  // IK target/pole 保持可拖（编辑不中断）；内部会填充拾取缓存
+  drawIKTargets(cameraRef, w, h);
+
+  paint2dEnabled = savedPaint;
 }
 
 function drawGrid(w, h) {

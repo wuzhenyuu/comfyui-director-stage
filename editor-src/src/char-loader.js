@@ -39,15 +39,15 @@ const BONE_PATTERNS = [
   [1,  [/hips/i, /pelvis/i, /mixamorig:Hips\b/i]],  // Hips (重映射到 idx 1 Neck 链上层，实际在 bone-editor CANON_KEYS 中通过 allBones 名字单独匹配)
   [1,  [/^spine$/i, /mixamorig:Spine\b/i]],           // Spine (同上)
   [2,  [/rightshoulder/i, /RightShoulder/i, /mixamorig[:]?RightArm\b/i, /RightArm\b/i, /right[_\s]*upper[_\s]*arm/i, /R[_\s]*UpperArm/i, /upperarm[_\s]*r\b/i]],
-  [3,  [/rightforearm/i, /right[_\s]*(forearm|elbow)/i, /mixamorig[:]?RightForeArm\b/i, /RightForeArm/i, /Forearm[_\s]*[rR]\b/i, /[rR][_\s]*Forearm/i]],
+  [3,  [/rightforearm/i, /right[_\s]*(forearm|elbow)/i, /mixamorig[:]?RightForeArm\b/i, /RightForeArm/i, /Forearm[_\s]*[rR]\b/i, /[rR][_\s]*Forearm/i, /lowerarm[_\s]*r\b/i]],
   [5,  [/leftshoulder/i, /LeftShoulder/i, /mixamorig[:]?LeftArm\b/i, /LeftArm\b/i, /left[_\s]*upper[_\s]*arm/i, /L[_\s]*UpperArm/i, /upperarm[_\s]*l\b/i]],
-  [6,  [/leftforearm/i, /left[_\s]*(forearm|elbow)/i, /mixamorig[:]?LeftForeArm\b/i, /LeftForeArm/i, /Forearm[_\s]*[lL]\b/i, /[lL][_\s]*Forearm/i]],
-  [8,  [/rightupleg/i, /RightUpLeg/i, /R[_\s]*Thigh/i, /right[_\s]*thigh/i]],
-  [9,  [/rightleg/i, /RightLeg/i, /R[_\s]*Calf/i, /right[_\s]*calf/i]],
-  [10, [/rightfoot/i, /RightFoot/i, /R[_\s]*Foot/i, /right[_\s]*foot/i]],
-  [11, [/leftupleg/i, /LeftUpLeg/i, /L[_\s]*Thigh/i, /left[_\s]*thigh/i]],
-  [12, [/leftleg/i, /LeftLeg/i, /L[_\s]*Calf/i, /left[_\s]*calf/i]],
-  [13, [/leftfoot/i, /LeftFoot/i, /L[_\s]*Foot/i, /left[_\s]*foot/i]],
+  [6,  [/leftforearm/i, /left[_\s]*(forearm|elbow)/i, /mixamorig[:]?LeftForeArm\b/i, /LeftForeArm/i, /Forearm[_\s]*[lL]\b/i, /[lL][_\s]*Forearm/i, /lowerarm[_\s]*l\b/i]],
+  [8,  [/rightupleg/i, /RightUpLeg/i, /R[_\s]*Thigh/i, /right[_\s]*thigh/i, /upperleg[_\s]*r\b/i]],
+  [9,  [/rightleg/i, /RightLeg/i, /R[_\s]*Calf/i, /right[_\s]*calf/i, /lowerleg[_\s]*r\b/i]],
+  [10, [/rightfoot/i, /RightFoot/i, /R[_\s]*Foot/i, /right[_\s]*foot/i, /foot[_\s]*r\b/i]],
+  [11, [/leftupleg/i, /LeftUpLeg/i, /L[_\s]*Thigh/i, /left[_\s]*thigh/i, /upperleg[_\s]*l\b/i]],
+  [12, [/leftleg/i, /LeftLeg/i, /L[_\s]*Calf/i, /left[_\s]*calf/i, /lowerleg[_\s]*l\b/i]],
+  [13, [/leftfoot/i, /LeftFoot/i, /L[_\s]*Foot/i, /left[_\s]*foot/i, /foot[_\s]*l\b/i]],
   [14, [/head/i, /mixamorig:Head/i]],  // REye
   [15, [/head/i, /mixamorig:Head/i]],  // LEye
   [16, [/head/i, /mixamorig:Head/i]],  // REar
@@ -102,8 +102,8 @@ const BONE_PATTERNS = [
   [59, [/right.*pinky3/i, /RightHandPinky3/i, /mixamorig:RightHandPinky3\b/i]],
   [60, [/right.*pinky4/i, /right.*pinkynub/i, /RightHandPinky4/i, /mixamorig:RightHandPinky4\b/i]],
 
-  [4,  [/righthand\b/i, /RightHand\b/i, /mixamorig[:]?RightHand\b/i]],
-  [7,  [/lefthand\b/i, /LeftHand\b/i, /mixamorig[:]?LeftHand\b/i]],
+  [4,  [/righthand\b/i, /RightHand\b/i, /mixamorig[:]?RightHand\b/i, /[rR][_\s]Hand/i, /palm2[_\s]*r\b/i]],
+  [7,  [/lefthand\b/i, /LeftHand\b/i, /mixamorig[:]?LeftHand\b/i, /[lL][_\s]Hand/i, /palm2[_\s]*l\b/i]],
   // === COCO 61-64: 脚趾 ===
   [61, [/left.*toebase/i, /LeftToeBase/i, /mixamorig:LeftToeBase\b/i]],
   [62, [/left.*toe[_\s]*end/i, /LeftToe_End/i, /mixamorig:LeftToe_End\b/i]],
@@ -201,13 +201,47 @@ export async function loadGLBCharacter(url, scene) {
   // 提取骨骼映射
   const { mapping: jointMap } = extractSkeletonMapping(skeleton);
 
+  // 检测"脱离链条"的末端骨（如 Rigify 扁平骨架：Foot 直接挂在根骨下，
+  // 旋转 UpperLeg/LowerLeg 不会带动 Foot，CCD IK 对腿完全失效）。
+  // 记录末端骨相对中段骨的绑定偏移矩阵，IK 求解后手动贴回（见 solveGLB_IK）。
+  model.updateMatrixWorld(true);
+  const detachedEnds = findDetachedChainEnds(jointMap);
+
   return {
     model,
     skeleton,
     jointMap,
     allBones: skeleton.bones,
     boneNames: skeleton.bones.map(b => b.name),
+    // P3-2：保留 GLB 自带骨骼动画（AnimationClip[]），供动作预设播放
+    animations: gltf.animations ?? [],
+    detachedEnds,
   };
+}
+
+/**
+ * 检测 IK 四链中端骨不在 root→mid 子树内的链（扁平骨架）。
+ * @param {Map<number,THREE.Bone>} jointMap
+ * @returns {Object<string,{mid:THREE.Bone,end:THREE.Bone,offsetMatrix:THREE.Matrix4}>}
+ */
+export function findDetachedChainEnds(jointMap) {
+  const chains = { rightArm: [2, 3, 4], leftArm: [5, 6, 7], rightLeg: [8, 9, 10], leftLeg: [11, 12, 13] };
+  const out = {};
+  for (const [name, [, m, e]] of Object.entries(chains)) {
+    const mid = jointMap.get(m), end = jointMap.get(e);
+    if (!mid || !end) continue;
+    let p = end.parent, desc = false;
+    while (p) { if (p === mid) { desc = true; break; } p = p.parent; }
+    if (!desc) {
+      mid.updateWorldMatrix(true, false);
+      end.updateWorldMatrix(true, false);
+      out[name] = {
+        mid, end,
+        offsetMatrix: mid.matrixWorld.clone().invert().multiply(end.matrixWorld),
+      };
+    }
+  }
+  return out;
 }
 
 /**

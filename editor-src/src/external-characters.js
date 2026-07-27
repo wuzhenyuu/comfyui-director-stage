@@ -176,6 +176,11 @@ export class ExternalCharacterManager {
       boneNames: data.boneNames,
       ikTargets: targets,
       ikTargetsGroup: group,
+      // 扁平骨架脱离末端骨（Rigify 脚挂根骨）：IK 求解后手动贴回
+      detachedEnds: data.detachedEnds || null,
+      // P3-2：模型自带骨骼动画 + 每角色独立 mixer
+      animations: data.animations ?? [],
+      mixer: (data.animations?.length ? new THREE.AnimationMixer(data.model) : null),
       visible: true,
       color: PALETTE[slot % PALETTE.length],
       spawnSlot: slot,
@@ -324,11 +329,23 @@ export class ExternalCharacterManager {
       disposeObjectTree(entry.ikTargetsGroup);
     }
     disposeVrmRuntime(entry);
+    // P3-2：清理 AnimationMixer（解除对骨骼的绑定引用）
+    if (entry.mixer) {
+      try { entry.mixer.stopAllAction(); } catch (_) { /* ignore */ }
+      try { entry.mixer.uncacheRoot(entry.model); } catch (_) { /* ignore */ }
+      entry.mixer = null;
+    }
     if (entry.skeleton) {
       try { entry.skeleton.boneTexture?.dispose?.(); } catch (_) { /* ignore */ }
       try { entry.skeleton.dispose?.(); } catch (_) { /* ignore */ }
     }
     this.characters.delete(id);
+    // P3-2：清理动作运行时状态（含 clip 的 _action 引用），防孤儿状态/内存泄漏
+    if (this.actionRuntime) {
+      const st = this.actionRuntime.states.get(id);
+      if (st?._action) { try { st._action.stop(); } catch (_) { /* ignore */ } }
+      this.actionRuntime.states.delete(id);
+    }
     if (this.activeCharacterId === id) {
       this.activeCharacterId = this.characters.keys().next().value || null;
     }

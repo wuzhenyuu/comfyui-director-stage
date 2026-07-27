@@ -62,10 +62,8 @@ function collectSceneData() {
     data.activeCharId = api.getActiveCharacter()?.id || null;
   }
 
-  // sceneGz 兼容
-  if (ds?.encodeSceneGz) {
-    data.sceneGz = ds.encodeSceneGz();
-  }
+  // sceneGz 兼容 — 已通过完整场景数据序列化，不再冗余存储 sceneGz 编码
+  // （略去 data.sceneGz 以减小 30-50% 文件体积）
 
   // P1.5：外部 3D角色（GLB/VRM）快照
   const extMgr = ds?.externalCharacters;
@@ -78,6 +76,11 @@ function collectSceneData() {
   // 核心B：自定义姿态预设（随 sceneJSON.posePresets / 工程文件持久化）
   if (typeof ds?.posePresets?.serialize === "function") {
     data.posePresets = ds.posePresets.serialize();
+  }
+
+  // 全景图
+  if (ds?.panorama && typeof ds.panorama.serialize === "function") {
+    data.panorama = ds.panorama.serialize();
   }
 
   return data;
@@ -145,6 +148,12 @@ async function importProject(file) {
 
 async function _doImport(file) {
   try {
+    // 文件大小限制：最大 50MB
+    const MAX_FILE_BYTES = 50 * 1024 * 1024;
+    if (file.size > MAX_FILE_BYTES) {
+      throw new Error(`文件过大 (${(file.size / 1024 / 1024).toFixed(1)}MB)，最大支持 50MB`);
+    }
+
     // 确认对话框
     const confirmed = confirm("导入会清空当前场景，确定？");
     if (!confirmed) {
@@ -208,7 +217,9 @@ async function _doImport(file) {
 
       // 恢复活动角色
       if (data.activeCharId && api.setActive) {
-        try { api.setActive(data.activeCharId); } catch (e) { /* ignore */ }
+        try { api.setActive(data.activeCharId); } catch (e) {
+          console.warn("[工程IO] 无法设置活动角色:", e.message);
+        }
       }
     }
 
@@ -240,7 +251,7 @@ async function _doImport(file) {
     }
 
     // 7) 恢复焦距
-    if (data.focalLength && ds?.setFocalLength) {
+    if (data.focalLength !== undefined && ds?.setFocalLength) {
       ds.setFocalLength(data.focalLength);
     }
 
@@ -255,6 +266,11 @@ async function _doImport(file) {
         }
         window.dispatchEvent(new CustomEvent("ds-project-loaded"));
       }).catch((e) => console.warn("[工程IO] 外部角色恢复失败:", e));
+    }
+
+    // 7.6) 恢复全景图
+    if (data.panorama && ds?.panorama && typeof ds.panorama.restore === "function") {
+      ds.panorama.restore(data.panorama, ds.scene);
     }
 
     // 8) 通知更新

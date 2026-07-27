@@ -53,7 +53,11 @@ function encodeSceneGzV2(manager, focalLength) {
         if (bone) {
           const pos = new THREE.Vector3();
           bone.getWorldPosition(pos);
-          joints.push([+pos.x.toFixed(4), +pos.y.toFixed(4), +pos.z.toFixed(4)]);
+          joints.push([
+            Number.isFinite(pos.x) ? +pos.x.toFixed(4) : 0,
+            Number.isFinite(pos.y) ? +pos.y.toFixed(4) : 0,
+            Number.isFinite(pos.z) ? +pos.z.toFixed(4) : 0,
+          ]);
         } else {
           joints.push([0, 0, 0]);
         }
@@ -62,16 +66,17 @@ function encodeSceneGzV2(manager, focalLength) {
       // IK targets 位置
       const ikTargets = {};
       for (const [chainName, state] of Object.entries(char.ikState)) {
+        const safeCoord = (v) => Number.isFinite(v) ? +v.toFixed(4) : 0;
         ikTargets[chainName] = {
           target: [
-            +state.target.position.x.toFixed(4),
-            +state.target.position.y.toFixed(4),
-            +state.target.position.z.toFixed(4),
+            safeCoord(state.target.position.x),
+            safeCoord(state.target.position.y),
+            safeCoord(state.target.position.z),
           ],
           pole: [
-            +state.pole.position.x.toFixed(4),
-            +state.pole.position.y.toFixed(4),
-            +state.pole.position.z.toFixed(4),
+            safeCoord(state.pole.position.x),
+            safeCoord(state.pole.position.y),
+            safeCoord(state.pole.position.z),
           ],
         };
       }
@@ -99,10 +104,10 @@ function encodeSceneGzV2(manager, focalLength) {
   };
 
   const gz = gzip(JSON.stringify(payload));
+  // 安全编码：逐字节拼接，避免 String.fromCharCode.apply 栈溢出
   let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < gz.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, gz.subarray(i, i + CHUNK));
+  for (let i = 0; i < gz.length; i++) {
+    bin += String.fromCharCode(gz[i]);
   }
   return btoa(bin);
 }
@@ -114,17 +119,17 @@ function encodeSceneGzV2(manager, focalLength) {
  * @returns {string} base64
  */
 export function encodeSceneGzM1(joints, focalLength = 35) {
+  const safeCoord = (v) => Number.isFinite(v) ? +v.toFixed(4) : 0;
   const arr = joints.map((j) => [
-    +j.position.x.toFixed(4),
-    +j.position.y.toFixed(4),
-    +j.position.z.toFixed(4),
+    safeCoord(j.position.x),
+    safeCoord(j.position.y),
+    safeCoord(j.position.z),
   ]);
   const payload = { v: 1, joints: arr, focalLength };
   const gz = gzip(JSON.stringify(payload));
   let bin = "";
-  const CHUNK = 0x8000;
-  for (let i = 0; i < gz.length; i += CHUNK) {
-    bin += String.fromCharCode.apply(null, gz.subarray(i, i + CHUNK));
+  for (let i = 0; i < gz.length; i++) {
+    bin += String.fromCharCode(gz[i]);
   }
   return btoa(bin);
 }
@@ -135,10 +140,11 @@ export function encodeSceneGzM1(joints, focalLength = 35) {
  * @returns {Object | null} { v, characters, joints(legacy), focalLength, activeCharId }
  */
 export function decodeSceneGz(b64) {
-  const bin = atob(b64);
-  const u8 = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-  const decoded = JSON.parse(new TextDecoder().decode(ungzip(u8)));
+  try {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const decoded = JSON.parse(new TextDecoder().decode(ungzip(u8)));
 
   if (!decoded) return null;
 
@@ -169,6 +175,10 @@ export function decodeSceneGz(b64) {
   }
 
   return null;
+  } catch (err) {
+    console.error("[3D导演台] sceneGz 解码失败:", err);
+    return null;
+  }
 }
 
 /**

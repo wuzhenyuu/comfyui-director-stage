@@ -12,17 +12,6 @@
       "hasFingers": true
     },
     {
-      "id": "mixamo-rigged",
-      "name": "Mixamo男性角色",
-      "file": "mixamo-rigged-character.glb",
-      "type": "character",
-      "description": "Mixamo 标准男性角色，58骨骼含手指脚趾+眼睛+下巴，100KB轻量。",
-      "defaultScale": 1.8,
-      "autoGround": true,
-      "bones": 58,
-      "hasFingers": true
-    },
-    {
       "id": "ue-mannequin",
       "name": "UE人体模型 (男)",
       "file": "ue-mannequin-retopology.glb",
@@ -43,6 +32,39 @@
       "autoGround": true,
       "bones": 62,
       "hasFingers": true
+    },
+    {
+      "id": "xbot",
+      "name": "X Bot (Mixamo机器人)",
+      "file": "Xbot.glb",
+      "type": "character",
+      "description": "Mixamo 标准机器人角色（Three.js 官方示例），67骨骼含40手指+4脚趾+3段脊柱，自带 idle/walk/run 等7个动画，2.8MB。",
+      "defaultScale": 1.8,
+      "autoGround": true,
+      "bones": 67,
+      "hasFingers": true
+    },
+    {
+      "id": "soldier",
+      "name": "Soldier (真人比例女兵)",
+      "file": "Soldier.glb",
+      "type": "character",
+      "description": "Mixamo 真人比例女性士兵角色（Three.js 官方示例），49骨骼含手指+3段脊柱，自带 Idle/Walk/Run/TPose 4个动画，2.1MB。",
+      "defaultScale": 1.8,
+      "autoGround": true,
+      "bones": 49,
+      "hasFingers": true
+    },
+    {
+      "id": "robot-expressive",
+      "name": "Robot Expressive (表情机器人)",
+      "file": "robot-expressive.glb",
+      "type": "character",
+      "description": "Mixamo 表情机器人，43骨骼（Blender Rigify命名 .L/.R），自带14个动画剪辑(Idle/Walk/Run/Punch/Wave/Dance等)，0.44MB轻量",
+      "defaultScale": 1.8,
+      "autoGround": true,
+      "bones": 43,
+      "hasFingers": false
     }
   ]
 }

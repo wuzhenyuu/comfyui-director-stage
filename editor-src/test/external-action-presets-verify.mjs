@@ -179,6 +179,19 @@ async function clickButtonByText(txt, excludeTxt = null) {
   }, [txt, excludeTxt]);
 }
 
+// P7：点「添加3D角色」弹出模型选择器，需再选一个模型才真正加载
+async function pickModelFromPicker() {
+  const ok = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (!ok) return false;
+  return page.evaluate(() => {
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (!rows.length) return false;
+    rows[0].click();
+    return true;
+  });
+}
+
 const ACTION_IDS = ["idle", "walk", "run", "wave", "jump", "stand", "sit", "crouch", "lie", "punch"];
 const ACTION_TEXT = {
   idle: ["idle", "待机"], walk: ["walk", "走路", "行走"], run: ["run", "跑步", "奔跑"],
@@ -430,7 +443,8 @@ if (pauseVia) {
 }
 
 // ================= 契约 7：第二个 GLB，双角色动作独立 =================
-const addedSecond = await clickButtonByText("添加GLB");
+const addedSecond = (await clickButtonByText("添加3D角色")) || (await clickButtonByText("添加GLB"));
+if (addedSecond) await pickModelFromPicker(); // P7：选模型后才真正加载
 if (!addedSecond) {
   check("契约7a 添加第二个 GLB", false, "未找到「添加GLB」按钮，契约7 无法验证");
   check("契约7b 两角色动作状态独立", false, "跳过");

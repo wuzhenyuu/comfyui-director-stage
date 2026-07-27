@@ -150,9 +150,18 @@ check("契约2b 3D-only：figureGroup 不存在或已隐藏",
   JSON.stringify(bootVis) + " — 契约未实现：3D-only 下火柴人必须退场");
 
 // ---- 契约 3：点击「添加GLB」按钮 ----
-const clickedAdd = await clickButtonByText("添加GLB");
+const clickedAdd = (await clickButtonByText("添加3D角色")) || (await clickButtonByText("添加GLB"));
 check("找到并点击「添加GLB」按钮", clickedAdd,
   clickedAdd ? "" : "契约未实现：不存在文本包含「添加GLB」的按钮，待核心 Agent 在角色工具栏添加");
+// P7：按钮弹出模型选择器，需再选一个模型才真正加载
+if (clickedAdd) {
+  const appeared = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (appeared) await page.evaluate(() => {
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (rows.length) rows[0].click();
+  });
+}
 
 // ---- 契约 4：等待 externalCharacters.getAll().length >= 2 ----
 let mgrReady = false;

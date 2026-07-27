@@ -656,11 +656,20 @@ mark("contract12-multi-char");
 await page.evaluate(() => document.querySelector('[data-edit-mode="bone"]')?.click());
 await page.waitForTimeout(400);
 const added2 = await page.evaluate(() => {
-  const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("添加GLB"));
+  const btn = [...document.querySelectorAll("button")].find((b) => (b.textContent.includes("添加3D角色") || b.textContent.includes("添加GLB")));
   if (!btn) return false;
   btn.click();
   return true;
 });
+// P7：按钮弹出模型选择器，需再选一个模型才真正加载
+if (added2) {
+  const appeared = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (appeared) await page.evaluate(() => {
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (rows.length) rows[0].click();
+  });
+}
 const twoChars = added2 && await page.waitForFunction(
   () => window.__ds?.externalCharacters?.getAll?.().length >= 2,
   null, { timeout: 25000 }

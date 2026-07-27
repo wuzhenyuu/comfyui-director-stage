@@ -61,6 +61,18 @@ async function clickButton(text, exclude = null) {
     return true;
   }, [text, exclude]);
 }
+// P7：点「添加3D角色」弹出模型选择器，需再选一个模型才真正加载
+async function pickModelFromPicker() {
+  const ok = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (!ok) return false;
+  return page.evaluate(() => {
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (!rows.length) return false;
+    rows[0].click();
+    return true;
+  });
+}
 async function panelState() {
   return page.evaluate(() => ({
     rows: document.querySelectorAll("#ext-char-list [data-ext-char-id]").length,
@@ -87,9 +99,11 @@ check("初始上限徽标 0/8", !cleared || empty.badge === "0/8",
   cleared ? empty.badge : "跳过：核心禁止清空");
 
 // 3D-only：「3D角色」切换按钮已被核心移除，添加首个角色也用「添加GLB」
-await clickButton("添加GLB");
+await clickButton("添加3D角色");
+await pickModelFromPicker();
 await page.waitForFunction(() => window.__ds?.externalCharacters?.getAll?.().length >= 1, null, { timeout: 20000 }).catch(() => {});
-await clickButton("添加GLB");
+await clickButton("添加3D角色");
+await pickModelFromPicker();
 await page.waitForFunction(() => window.__ds?.externalCharacters?.getAll?.().length >= 2, null, { timeout: 20000 }).catch(() => {});
 await page.waitForTimeout(300);
 

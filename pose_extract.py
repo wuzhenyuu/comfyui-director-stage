@@ -17,6 +17,8 @@ ExtractPoseFromImage：
 """
 
 import json
+import time
+
 import numpy as np
 import torch
 
@@ -24,6 +26,29 @@ try:
     from PIL import Image
 except Exception:
     Image = None
+
+# COCO-18 标准 T-pose 3D 坐标（米，原点在髋部中心）
+# 原代码 `from .constants import T_POSE` 会崩溃（constants 是 JS 模块非 Python）
+_T_POSE_3D = [
+    [0.0, 1.75, 0.0],   # 0  Nose
+    [0.0, 1.60, 0.0],   # 1  Neck
+    [-0.18, 1.55, 0.0], # 2  RShoulder
+    [-0.40, 1.30, 0.0], # 3  RElbow
+    [-0.60, 1.05, 0.0], # 4  RWrist
+    [0.18, 1.55, 0.0],  # 5  LShoulder
+    [0.40, 1.30, 0.0],  # 6  LElbow
+    [0.60, 1.05, 0.0],  # 7  LWrist
+    [-0.10, 0.95, 0.0], # 8  RHip
+    [-0.12, 0.50, 0.0], # 9  RKnee
+    [-0.12, 0.05, 0.0], # 10 RAnkle
+    [0.10, 0.95, 0.0],  # 11 LHip
+    [0.12, 0.50, 0.0],  # 12 LKnee
+    [0.12, 0.05, 0.0],  # 13 LAnkle
+    [-0.05, 1.78, 0.05],# 14 REye
+    [0.05, 1.78, 0.05], # 15 LEye
+    [-0.08, 1.77, -0.03],# 16 REar
+    [0.08, 1.77, -0.03], # 17 LEar
+]
 
 
 def _log(msg):
@@ -297,7 +322,7 @@ class ExtractPoseFromImage:
             "selected_index": selected,
             "image_size": [w, h],
             "format": "coco_18",
-            "timestamp": float(torch.tensor([0]).item())  # 用于 IS_CHANGED
+            "timestamp": time.time(),  # 记录提取时间，供调试/缓存排查
         }
         
         _log(f"检测到 {len(persons)} 个人物，选择第 {selected} 个")
@@ -311,7 +336,7 @@ class ExtractPoseFromImage:
             "selected_index": 0,
             "image_size": [width, height],
             "format": "coco_18",
-            "timestamp": 0
+            "timestamp": 0.0
         }
 
 
@@ -349,23 +374,19 @@ class PoseDataToJoints:
         返回: list of [x, y, z]，18 个关节
         """
         if not pose_data or not pose_data.get("persons"):
-            # 返回 T-pose
-            from .constants import T_POSE
-            return (T_POSE,)
+            return (_T_POSE_3D,)
         
         selected = pose_data.get("selected_index", 0)
         persons = pose_data["persons"]
         
         if selected >= len(persons):
-            from .constants import T_POSE
-            return (T_POSE,)
+            return (_T_POSE_3D,)
         
         person = persons[selected]
         keypoints_3d = person.get("keypoints_3d", [])
         
         if not keypoints_3d:
-            from .constants import T_POSE
-            return (T_POSE,)
+            return (_T_POSE_3D,)
         
         # 应用深度缩放和高度偏移
         joints = []

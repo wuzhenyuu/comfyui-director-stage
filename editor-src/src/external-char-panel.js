@@ -10,7 +10,7 @@
  * 可见性/重命名时触发）。
  */
 import { MAX_EXTERNAL_CHARACTERS } from "./external-characters.js";
-import { ACTIONS } from "./action-presets.js";
+import { ACTIONS, getClipActions } from "./action-presets.js";
 import { createPosePresetSection } from "./pose-presets.js";
 
 const ROW_BTN_STYLE =
@@ -112,12 +112,41 @@ export function createExternalCharPanel(container, manager, opts = {}) {
   actionSelect.style.cssText =
     "flex:1;background:#1e2230;color:#c8cddb;border:1px solid #2a2f3d;border-radius:4px;" +
     "font-size:11px;padding:3px 4px;min-width:0;";
-  for (const a of ACTIONS) {
-    const opt = document.createElement("option");
-    opt.value = a.id;
-    opt.textContent = a.name;
-    actionSelect.appendChild(opt);
+  // P3-2：动态填充动作下拉框 —「动作预设」（程序化）+「模型动画」（活动角色自带 AnimationClip）
+  let _actionSelectKey = "";
+  function rebuildActionSelect() {
+    const activeEntry = manager.getActive?.() || null;
+    const clipActions = activeEntry ? getClipActions(activeEntry) : [];
+    const key = (activeEntry?.id || "-") + ":" + clipActions.length;
+    if (key === _actionSelectKey) return;
+    _actionSelectKey = key;
+    const prevVal = actionSelect.value;
+    actionSelect.innerHTML = "";
+    const g1 = document.createElement("optgroup");
+    g1.label = "动作预设";
+    for (const a of ACTIONS) {
+      const opt = document.createElement("option");
+      opt.value = a.id;
+      opt.textContent = a.name;
+      g1.appendChild(opt);
+    }
+    actionSelect.appendChild(g1);
+    if (clipActions.length) {
+      const g2 = document.createElement("optgroup");
+      g2.label = "模型动画";
+      for (const a of clipActions) {
+        const opt = document.createElement("option");
+        opt.value = a.id;
+        opt.textContent = a.name;
+        g2.appendChild(opt);
+      }
+      actionSelect.appendChild(g2);
+    }
+    if ([...actionSelect.options].some((o) => o.value === prevVal)) {
+      actionSelect.value = prevVal;
+    }
   }
+  rebuildActionSelect();
   actionRow1.appendChild(actionSelect);
 
   const playBtn = document.createElement("button");
@@ -263,9 +292,10 @@ export function createExternalCharPanel(container, manager, opts = {}) {
 
     // P3-0：同步动作栏到活动角色状态
     if (actionRuntime) {
+      rebuildActionSelect(); // P3-2：活动角色变化时刷新「模型动画」分组
       const active = entries.find((e) => e.id === activeId) || null;
       const st = active ? actionRuntime.getState(active.id) : null;
-      if (st && actionSelect.value !== st.id && ACTIONS.some((a) => a.id === st.id)) {
+      if (st && actionSelect.value !== st.id && [...actionSelect.options].some((o) => o.value === st.id)) {
         actionSelect.value = st.id;
       }
       playBtn.textContent = st?.playing ? "⏸" : "▶";
@@ -328,7 +358,10 @@ export function createExternalCharPanel(container, manager, opts = {}) {
       // P3-0：播放中动作徽标
       if (actionRuntime?.isPlaying?.(entry.id)) {
         const st = actionRuntime.getState(entry.id);
-        const actionName = ACTIONS.find((a) => a.id === st.id)?.name || st.id;
+        // P3-2：clip 动作名从模型动画清单取（含中文名）
+        const actionName = ACTIONS.find((a) => a.id === st.id)?.name
+          || getClipActions(entry).find((a) => a.id === st.id)?.name
+          || st.id;
         const playBadge = document.createElement("span");
         playBadge.className = "ext-action-badge";
         playBadge.textContent = "▶" + actionName;

@@ -105,8 +105,17 @@ check("默认/点击进入第一个 GLB 3D角色模式", clickedFirst);
 await page.waitForFunction(() => window.__ds?.isGLBMode === true && !!window.__ds?.glbData, null, { timeout: 15000 }).catch(() => {});
 check("第一个 GLB 加载并进入 3D角色模式", await page.evaluate(() => window.__ds?.isGLBMode === true && !!window.__ds?.glbData));
 
-const clickedAdd = await clickButtonByText("添加GLB");
+const clickedAdd = (await clickButtonByText("添加3D角色")) || (await clickButtonByText("添加GLB"));
 check("找到并点击「添加GLB」按钮", clickedAdd);
+// P7：按钮弹出模型选择器，需再选一个模型才真正加载
+if (clickedAdd) {
+  const appeared = await page.waitForSelector("#model-picker-menu", { timeout: 5000 }).then(() => true).catch(() => false);
+  if (appeared) await page.evaluate(() => {
+    const menu = document.getElementById("model-picker-menu");
+    const rows = menu ? [...menu.children].slice(1) : [];
+    if (rows.length) rows[0].click();
+  });
+}
 const twoReady = await page.waitForFunction(
   () => window.__ds?.externalCharacters?.getAll?.().length >= 2,
   null, { timeout: 20000 }

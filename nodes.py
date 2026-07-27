@@ -117,6 +117,97 @@ def _load_mask(rel_path, width, height, name):
         return None
 
 
+def _collect_camera_masks(camera, manifest_data):
+    """收集指定机位的角色 mask 条目列表（P0 契约修复，兼容两种 manifest 布局）。
+
+    布局 A（示例工作流手写格式）：masks 嵌在 camera 对象内
+        cameras[i].masks = [{name, file}, ...]
+    布局 B（编辑器 export.js 实际导出格式）：masks 在 manifest 顶层，按 cameraId 归属
+        manifest.masks = [{charId, name, cameraId, file}, ...]
+
+    返回 mask 条目列表（可能为空列表）。
+    """
+    if not isinstance(camera, dict):
+        return []
+
+    # 布局 A：camera 内嵌 masks 优先
+    cam_masks = camera.get("masks")
+    if isinstance(cam_masks, list) and len(cam_masks) > 0:
+        return [m for m in cam_masks if isinstance(m, dict)]
+
+    # 布局 B：顶层 manifest.masks 按 cameraId 过滤
+    if isinstance(manifest_data, dict):
+        top_masks = manifest_data.get("masks")
+        if isinstance(top_masks, list) and len(top_masks) > 0:
+            cam_id = camera.get("id")
+            result = []
+            for m in top_masks:
+                if not isinstance(m, dict):
+                    continue
+                # cameraId 缺失/为空时视为通配（归属所有机位）
+                if m.get("cameraId") in (None, "", cam_id):
+                    result.append(m)
+            if result:
+                return result
+
+    return []
+
+
+def _build_mask_batch(camera, manifest_data, width, height):
+    """构建 [N, 1, H, W] MASK batch（模块级函数，DirectorStage/Shot 共用）。"""
+    masks = _collect_camera_masks(camera, manifest_data)
+    if not masks:
+        return _blank_mask(width, height)
+
+    mask_tensors = []
+    for m in masks:
+        name = m.get("name") or m.get("charId") or "未知角色"
+        file_path = m.get("file", "")
+        loaded = _load_mask(file_path, width, height, name)
+        if loaded is not None:
+            mask_tensors.append(loaded)
+
+    if len(mask_tensors) == 0:
+        return _blank_mask(width, height)
+
+    try:
+        # torch.cat along dim=0 → [N, 1, H, W]
+        return torch.cat(mask_tensors, dim=0)
+    except Exception as e:
+        _log("警告：mask batch 合并失败（各 mask 尺寸不一致？）：%s，输出空白 mask。" % e)
+        return _blank_mask(width, height)
+
+
+def _build_camera_json(camera):
+    """从 camera 中提取完整内外参 → JSON 字符串（模块级函数，DirectorStage/Shot 共用）。
+
+    优先使用 cameraParams（M2 新格式），回退到旧 pose 字段。
+    """
+    try:
+        params = camera.get("cameraParams")
+        if params and isinstance(params, dict):
+            # M2 新格式：完整内外参
+            info = {
+                "id": camera.get("id", ""),
+                "name": camera.get("name", ""),
+                "intrinsics": params.get("intrinsics", {}),
+                "extrinsics": params.get("extrinsics", {}),
+                "projectionMatrix": params.get("projectionMatrix", []),
+                "viewMatrix": params.get("viewMatrix", []),
+            }
+        else:
+            # 旧格式回退
+            info = {
+                "pos": camera.get("pos", [0, 0, 0]),
+                "target": camera.get("target", [0, 0, 0]),
+                "focalMM": camera.get("focalMM", 35),
+            }
+        return json.dumps(info, ensure_ascii=False)
+    except Exception as e:
+        _log("警告：构建 camera_json 失败：%s" % e)
+        return json.dumps({}, ensure_ascii=False)
+
+
 def _parse_manifest(manifest_str):
     """安全解析 manifest JSON，失败返回空 dict。"""
     try:
@@ -214,11 +305,11 @@ class DirectorStage:
         normal = _load_image(files.get("normal"), w, h, "normal")
         lineart = _load_image(files.get("lineart"), w, h, "lineart")
 
-        # 角色 mask batch
-        char_masks = self._build_mask_batch(camera, w, h)
+        # 角色 mask batch（兼容 camera 内嵌 / 顶层 masks 两种布局）
+        char_masks = _build_mask_batch(camera, manifest_data, w, h)
 
         # camera_json
-        camera_json = self._build_camera_json(camera)
+        camera_json = _build_camera_json(camera)
 
         return (openpose, depth, normal, lineart, char_masks, camera_json)
 
@@ -245,60 +336,6 @@ class DirectorStage:
         camera_json = json.dumps({}, ensure_ascii=False)
 
         return (openpose, depth, normal, lineart, char_masks, camera_json)
-
-    def _build_mask_batch(self, camera, width, height):
-        """从 camera 的 masks[] 构建 [N, 1, H, W] MASK batch。
-
-        masks[].version >= 2 格式：每个 mask 含 name + file 字段。
-        """
-        masks = camera.get("masks")
-        if not isinstance(masks, list) or len(masks) == 0:
-            return _blank_mask(width, height)
-
-        mask_tensors = []
-        for m in masks:
-            if not isinstance(m, dict):
-                continue
-            name = m.get("name", "未知角色")
-            file_path = m.get("file", "")
-            loaded = _load_mask(file_path, width, height, name)
-            if loaded is not None:
-                mask_tensors.append(loaded)
-
-        if len(mask_tensors) == 0:
-            return _blank_mask(width, height)
-
-        # torch.cat along dim=0 → [N, 1, H, W]
-        return torch.cat(mask_tensors, dim=0)
-
-    def _build_camera_json(self, camera):
-        """从 camera 中提取完整内外参 → JSON 字符串。
-
-        优先使用 cameraParams（M2 新格式），回退到旧 pose 字段。
-        """
-        try:
-            params = camera.get("cameraParams")
-            if params and isinstance(params, dict):
-                # M2 新格式：完整内外参
-                info = {
-                    "id": camera.get("id", ""),
-                    "name": camera.get("name", ""),
-                    "intrinsics": params.get("intrinsics", {}),
-                    "extrinsics": params.get("extrinsics", {}),
-                    "projectionMatrix": params.get("projectionMatrix", []),
-                    "viewMatrix": params.get("viewMatrix", []),
-                }
-            else:
-                # 旧格式回退
-                info = {
-                    "pos": camera.get("pos", [0, 0, 0]),
-                    "target": camera.get("target", [0, 0, 0]),
-                    "focalMM": camera.get("focalMM", 35),
-                }
-            return json.dumps(info, ensure_ascii=False)
-        except Exception as e:
-            _log("警告：构建 camera_json 失败：%s" % e)
-            return json.dumps({}, ensure_ascii=False)
 
 
 # ============================================================================
@@ -389,11 +426,11 @@ class DirectorStageShot:
         normal = _load_image(files.get("normal"), w, h, "normal")
         lineart = _load_image(files.get("lineart"), w, h, "lineart")
 
-        # 角色 mask batch —— 复用 DirectorStage 的 mask 构建逻辑
-        char_masks = DirectorStage._build_mask_batch(DirectorStage, camera, w, h)
+        # 角色 mask batch（模块级函数，兼容两种 manifest 布局）
+        char_masks = _build_mask_batch(camera, data, w, h)
 
-        # camera_json
-        camera_json = DirectorStage._build_camera_json(DirectorStage, camera)
+        # camera_json（模块级函数）
+        camera_json = _build_camera_json(camera)
 
         return (openpose, depth, normal, lineart, char_masks, camera_json)
 

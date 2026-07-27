@@ -28,17 +28,45 @@ def _log(msg):
             pass
 
 
+# M3 姿势提取节点（ExtractPoseFromImage / PoseDataToJoints）
+# 依赖 controlnet_aux 的 DWPose；不可用时节点内部会优雅降级，不影响注册。
+try:
+    from .pose_extract import (
+        NODE_CLASS_MAPPINGS as _POSE_NODE_CLASS_MAPPINGS,
+        NODE_DISPLAY_NAME_MAPPINGS as _POSE_NODE_DISPLAY_NAME_MAPPINGS,
+    )
+    NODE_CLASS_MAPPINGS.update(_POSE_NODE_CLASS_MAPPINGS)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_POSE_NODE_DISPLAY_NAME_MAPPINGS)
+except Exception as e:
+    # _log 尚未定义，此处直接 print 兑底（与下方 _log 同策略）
+    try:
+        print("[3D导演台] 警告：M3 姿势提取节点注册失败（不影响主节点）：%s" % e)
+    except Exception:
+        pass
+
 # 把 web/editor（编辑器 SPA 构建产物）挂载为静态目录：/director_stage/editor
+# index.html 单独路由 + Cache-Control: no-cache —— 防止浏览器缓存旧 HTML
+# 引用已删除的旧 bundle（vite 每次构建换 hash 文件名），导致打开导演台白屏。
 try:
     from server import PromptServer
     from aiohttp import web
 
     _editor_dir = os.path.join(os.path.dirname(__file__), "web", "editor")
     os.makedirs(_editor_dir, exist_ok=True)
+
+    async def _editor_index_no_cache(request):
+        return web.FileResponse(
+            os.path.join(_editor_dir, "index.html"),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
+
+    # 先注册精确路由（优先于静态目录匹配），再挂载静态目录
+    PromptServer.instance.app.router.add_get("/director_stage/editor/", _editor_index_no_cache)
+    PromptServer.instance.app.router.add_get("/director_stage/editor/index.html", _editor_index_no_cache)
     PromptServer.instance.app.add_routes(
         [web.static("/director_stage/editor", _editor_dir)]
     )
-    _log("编辑器静态目录已挂载：/director_stage/editor")
+    _log("编辑器静态目录已挂载：/director_stage/editor（index.html no-cache）")
 except Exception as e:
     _log("警告：编辑器静态目录挂载失败（不影响节点本身加载）：%s" % e)
 
