@@ -17,6 +17,7 @@
 import * as THREE from "three";
 import { loadGLBCharacter, createGLBIKTargets } from "./char-loader.js";
 import { loadVRMCharacter } from "./vrm-loader.js";
+import { ensureRig } from "./action-presets.js";
 
 /** 外部角色上限 */
 export const MAX_EXTERNAL_CHARACTERS = 8;
@@ -103,6 +104,12 @@ export class ExternalCharacterManager {
     this._restorePending = false;
     /** P3-0：ActionRuntime 挂载点（由 action-runtime.js 构造函数赋值），snapshot/restore 动作状态用 */
     this.actionRuntime = null;
+    /**
+     * P2-fix：加载中占位（TOCTOU 防护）。addGLB/addVRM 在 await 前先登记，
+     * 占住配额/slot/id；clear()/remove() 会作废占位，迟到的加载完成后自行清理并放弃。
+     * @type {Map<string, {id:string, slot:number, valid:boolean}>}
+     */
+    this._pendingAdds = new Map();
   }
 
   get size() {
@@ -145,48 +152,63 @@ export class ExternalCharacterManager {
    * @returns {Promise<object|null>} entry；达到上限返回 null
    */
   async addGLB(url, name, opts = {}) {
-    if (this.characters.size >= MAX_EXTERNAL_CHARACTERS) {
+    // P2-fix：配额检查把加载中占位也算上，防并发 add 突破上限
+    if (this.characters.size + this._pendingAdds.size >= MAX_EXTERNAL_CHARACTERS) {
       console.warn("[外部角色] 已达上限", MAX_EXTERNAL_CHARACTERS);
       return null;
     }
     const slot = opts.spawnSlot ?? this._nextSlot();
     const id = opts.id || `ext-glb-${++_idCounter}`;
+    // P2-fix：await 前占位（占住 slot/id），加载途中被 clear/remove 作废则放弃
+    const ticket = { id, slot, valid: true };
+    this._pendingAdds.set(id, ticket);
 
-    const data = await loadGLBCharacter(url, this.scene);
+    try {
+      const data = await loadGLBCharacter(url, this.scene);
 
-    // 错位出生：先挪模型、刷新世界矩阵，再按骨骼世界坐标创建 IK 球
-    const [ox, oz] = spawnOffset(slot);
-    data.model.position.x += ox;
-    data.model.position.z += oz;
-    data.model.updateMatrixWorld(true);
+      if (!ticket.valid) {
+        // 加载期间用户 clear()/remove()：清理已加载模型，不再加回
+        this.scene.remove(data.model);
+        disposeObjectTree(data.model);
+        return null;
+      }
 
-    const { targets, group } = createGLBIKTargets(data.jointMap);
-    this.scene.add(group);
+      // 错位出生：先挪模型、刷新世界矩阵，再按骨骼世界坐标创建 IK 球
+      const [ox, oz] = spawnOffset(slot);
+      data.model.position.x += ox;
+      data.model.position.z += oz;
+      data.model.updateMatrixWorld(true);
 
-    const entry = {
-      id,
-      name: name || `3D角色${slot + 1}`,
-      type: "glb",
-      url,
-      fileName: opts.fileName || null,
-      model: data.model,
-      skeleton: data.skeleton,
-      jointMap: data.jointMap,
-      allBones: data.allBones,
-      boneNames: data.boneNames,
-      ikTargets: targets,
-      ikTargetsGroup: group,
-      // 扁平骨架脱离末端骨（Rigify 脚挂根骨）：IK 求解后手动贴回
-      detachedEnds: data.detachedEnds || null,
-      // P3-2：模型自带骨骼动画 + 每角色独立 mixer
-      animations: data.animations ?? [],
-      mixer: (data.animations?.length ? new THREE.AnimationMixer(data.model) : null),
-      visible: true,
-      color: PALETTE[slot % PALETTE.length],
-      spawnSlot: slot,
-    };
-    this._finalizeAdd(entry);
-    return entry;
+      const { targets, group } = createGLBIKTargets(data.jointMap);
+      this.scene.add(group);
+
+      const entry = {
+        id,
+        name: name || `3D角色${slot + 1}`,
+        type: "glb",
+        url,
+        fileName: opts.fileName || null,
+        model: data.model,
+        skeleton: data.skeleton,
+        jointMap: data.jointMap,
+        allBones: data.allBones,
+        boneNames: data.boneNames,
+        ikTargets: targets,
+        ikTargetsGroup: group,
+        // 扁平骨架脱离末端骨（Rigify 脚挂根骨）：IK 求解后手动贴回
+        detachedEnds: data.detachedEnds || null,
+        // P3-2：模型自带骨骼动画 + 每角色独立 mixer
+        animations: data.animations ?? [],
+        mixer: (data.animations?.length ? new THREE.AnimationMixer(data.model) : null),
+        visible: true,
+        color: PALETTE[slot % PALETTE.length],
+        spawnSlot: slot,
+      };
+      this._finalizeAdd(entry);
+      return entry;
+    } finally {
+      this._pendingAdds.delete(id);
+    }
   }
 
   /**
@@ -198,53 +220,69 @@ export class ExternalCharacterManager {
    * @returns {Promise<object|null>}
    */
   async addVRM(url, name, fileName, opts = {}) {
-    if (this.characters.size >= MAX_EXTERNAL_CHARACTERS) {
+    // P2-fix：配额检查把加载中占位也算上，防并发 add 突破上限
+    if (this.characters.size + this._pendingAdds.size >= MAX_EXTERNAL_CHARACTERS) {
       console.warn("[外部角色] 已达上限", MAX_EXTERNAL_CHARACTERS);
       return null;
     }
     const slot = opts.spawnSlot ?? this._nextSlot();
     const id = opts.id || `ext-vrm-${++_idCounter}`;
+    // P2-fix：await 前占位（占住 slot/id），加载途中被 clear/remove 作废则放弃
+    const ticket = { id, slot, valid: true };
+    this._pendingAdds.set(id, ticket);
 
-    const data = await loadVRMCharacter(url, this.scene);
+    try {
+      const data = await loadVRMCharacter(url, this.scene);
 
-    // VRM 的 IK 球在 load 时已按原点骨骼坐标创建：模型错位后同步平移 IK 球
-    const [ox, oz] = spawnOffset(slot);
-    data.group.position.x += ox;
-    data.group.position.z += oz;
-    data.group.updateMatrixWorld(true);
-    if (data.ikTargets) {
-      for (const t of Object.values(data.ikTargets)) {
-        t.target.position.x += ox;
-        t.target.position.z += oz;
-        t.pole.position.x += ox;
-        t.pole.position.z += oz;
+      if (!ticket.valid) {
+        // 加载期间用户 clear()/remove()：清理已加载模型，不再加回
+        if (data.group) { this.scene.remove(data.group); disposeObjectTree(data.group); }
+        if (data.ikTargetsGroup) { this.scene.remove(data.ikTargetsGroup); disposeObjectTree(data.ikTargetsGroup); }
+        disposeVrmRuntime({ vrm: data.vrm });
+        return null;
       }
-    }
-    if (data.ikTargetsGroup && !data.ikTargetsGroup.parent) this.scene.add(data.ikTargetsGroup);
 
-    const entry = {
-      id,
-      name: name || fileName || `VRM角色${slot + 1}`,
-      type: "vrm",
-      url,
-      fileName: fileName || null,
-      model: data.group, // 归一化为 model 字段（旧 vrmData.model.visible 路径修复）
-      skeleton: data.skeleton,
-      jointMap: data.jointMap,
-      allBones: data.allBones,
-      boneNames: data.allBones ? data.allBones.map((b) => b.name) : [],
-      ikTargets: data.ikTargets,
-      ikTargetsGroup: data.ikTargetsGroup,
-      vrm: data.vrm || null,
-      // P2-fix：VRM 自带骨骼动画 + mixer（对齐 GLB 路径，clip 动作对 VRM 可用）
-      animations: data.animations ?? [],
-      mixer: (data.animations?.length ? new THREE.AnimationMixer(data.group) : null),
-      visible: true,
-      color: PALETTE[slot % PALETTE.length],
-      spawnSlot: slot,
-    };
-    this._finalizeAdd(entry);
-    return entry;
+      // VRM 的 IK 球在 load 时已按原点骨骼坐标创建：模型错位后同步平移 IK 球
+      const [ox, oz] = spawnOffset(slot);
+      data.group.position.x += ox;
+      data.group.position.z += oz;
+      data.group.updateMatrixWorld(true);
+      if (data.ikTargets) {
+        for (const t of Object.values(data.ikTargets)) {
+          t.target.position.x += ox;
+          t.target.position.z += oz;
+          t.pole.position.x += ox;
+          t.pole.position.z += oz;
+        }
+      }
+      if (data.ikTargetsGroup && !data.ikTargetsGroup.parent) this.scene.add(data.ikTargetsGroup);
+
+      const entry = {
+        id,
+        name: name || fileName || `VRM角色${slot + 1}`,
+        type: "vrm",
+        url,
+        fileName: fileName || null,
+        model: data.group, // 归一化为 model 字段（旧 vrmData.model.visible 路径修复）
+        skeleton: data.skeleton,
+        jointMap: data.jointMap,
+        allBones: data.allBones,
+        boneNames: data.allBones ? data.allBones.map((b) => b.name) : [],
+        ikTargets: data.ikTargets,
+        ikTargetsGroup: data.ikTargetsGroup,
+        vrm: data.vrm || null,
+        // P2-fix：VRM 自带骨骼动画 + mixer（对齐 GLB 路径，clip 动作对 VRM 可用）
+        animations: data.animations ?? [],
+        mixer: (data.animations?.length ? new THREE.AnimationMixer(data.group) : null),
+        visible: true,
+        color: PALETTE[slot % PALETTE.length],
+        spawnSlot: slot,
+      };
+      this._finalizeAdd(entry);
+      return entry;
+    } finally {
+      this._pendingAdds.delete(id);
+    }
   }
 
   _finalizeAdd(entry) {
@@ -258,6 +296,10 @@ export class ExternalCharacterManager {
       }
     }
     this.characters.set(entry.id, entry);
+    // P2-fix（ensureRig 懒捕获污染 home）：加载完成即捕获 rig 基准——
+    // 此时模型必为绑定 T/A-pose，home 不会被"先摆姿势再播首个动作"的中间姿势污染。
+    // restore 场景：捕获发生在变换恢复前（spawn 姿势），delta 随动数学保证映射精确。
+    try { ensureRig(entry); } catch (_) { /* 捕获失败不阻塞加载（后续懒捕获兼容） */ }
     if (!this.activeCharacterId) this.activeCharacterId = entry.id;
     // 遵循当前模式可见性（例如 restore 发生在 stick 模式时保持隐藏）
     this._applyEntryVisibility(entry);
@@ -266,11 +308,13 @@ export class ExternalCharacterManager {
 
   _nextSlot() {
     // 取未被占用的最小槽位（remove 后可复用，上限由 size 检查保证）
+    // P2-fix：加载中占位的 slot 也算已用，防并发 add 拿到同一槽位
     const used = new Set([...this.characters.values()].map((e) => e.spawnSlot));
+    for (const t of this._pendingAdds.values()) used.add(t.slot);
     for (let s = 0; s < MAX_EXTERNAL_CHARACTERS; s++) {
       if (!used.has(s)) return s;
     }
-    return this.characters.size;
+    return this.characters.size + this._pendingAdds.size;
   }
 
   setActive(id) {
@@ -322,7 +366,12 @@ export class ExternalCharacterManager {
    */
   remove(id) {
     const entry = this.characters.get(id);
-    if (!entry) return false;
+    if (!entry) {
+      // P2-fix：同 id 的加载中占位一并作废（迟到加载不会"复活"该角色）
+      const pend = this._pendingAdds.get(id);
+      if (pend) { pend.valid = false; this._pendingAdds.delete(id); }
+      return false;
+    }
     if (entry.model) {
       this.scene.remove(entry.model);
       disposeObjectTree(entry.model);
@@ -357,6 +406,9 @@ export class ExternalCharacterManager {
   }
 
   clear() {
+    // P2-fix：先作废所有加载中占位——迟到的 add 完成后自行清理，不再"复活"
+    for (const t of this._pendingAdds.values()) t.valid = false;
+    this._pendingAdds.clear();
     for (const id of Array.from(this.characters.keys())) {
       this.remove(id);
     }

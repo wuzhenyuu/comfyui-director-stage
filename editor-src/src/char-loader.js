@@ -34,7 +34,10 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
  */
 const BONE_PATTERNS = [
   // === COCO 0-17: 主干 18 关节（openpose / IK 必需） ===
-  [0,  [/nose/i, /nosetip/i, /mixamorig[:]?Nose(?:Tip)?\b/i, /head/i, /mixamorig:Head/i]],
+  // P2-fix：行 0 的 head 通配必须带词边界——原 /head/i 无边界，把 14-17（眼/耳）
+  // 与 20（headTop）全部提前截获（行序首命中即返回），导致 GLB 眼/耳/头顶永不映射。
+  // /head\b/i 不匹配 "HeadTop_End"（d 后紧跟词字符）；mixamorig 精确式同样加 \b。
+  [0,  [/nose/i, /nosetip/i, /mixamorig[:]?Nose(?:Tip)?\b/i, /head\b/i, /mixamorig:Head\b/i]],
   [1,  [/neck/i, /mixamorig:Neck/i, /mixamorigNeck\b/i]],
   // P1-fix：joint 1 只匹配 neck（原 hips/spine 也映射到 1，依赖骨骼数组顺序"先到先赢"，
   // 实测三个内置模型 get(1) 全部命中 Hips/Pelvis 而非 Neck）。
@@ -51,10 +54,11 @@ const BONE_PATTERNS = [
   [11, [/leftupleg/i, /LeftUpLeg/i, /L[_\s]*Thigh/i, /left[_\s]*thigh/i, /upperleg[_\s]*l\b/i]],
   [12, [/leftleg/i, /LeftLeg/i, /L[_\s]*Calf/i, /left[_\s]*calf/i, /lowerleg[_\s]*l\b/i]],
   [13, [/leftfoot/i, /LeftFoot/i, /L[_\s]*Foot/i, /left[_\s]*foot/i, /foot[_\s]*l\b/i]],
-  [14, [/head/i, /mixamorig:Head/i]],  // REye
-  [15, [/head/i, /mixamorig:Head/i]],  // LEye
-  [16, [/head/i, /mixamorig:Head/i]],  // REar
-  [17, [/head/i, /mixamorig:Head/i]],  // LEar
+  // P2-fix：眼/耳改用真实可命中的模式（原四行均为 /head/i，被行 0 截获永不可达）
+  [14, [/right.*eye/i, /eye.*right/i, /eye[_\s]*r\b/i, /r[_\s]*eye/i]],  // REye
+  [15, [/left.*eye/i, /eye.*left/i, /eye[_\s]*l\b/i, /l[_\s]*eye/i]],    // LEye
+  [16, [/right.*ear/i, /ear.*right/i, /ear[_\s]*r\b/i, /r[_\s]*ear/i]],  // REar
+  [17, [/left.*ear/i, /ear.*left/i, /ear[_\s]*l\b/i, /l[_\s]*ear/i]],    // LEar
 
   // === COCO 18-20: 额外脊柱/头部 ===
   [18, [/spine1/i, /Spine1/i, /mixamorig:Spine1\b/i]],
@@ -118,7 +122,7 @@ const BONE_PATTERNS = [
  * 尝试将骨骼名映射到 COCO-18 关节索引（或字符串键 "rigRoot"/"rigSpine"）
  * @returns {number|string} 未命中返回 -1
  */
-function mapBoneToJoint(boneName) {
+export function mapBoneToJoint(boneName) {
   for (const [jointIdx, patterns] of BONE_PATTERNS) {
     for (const pat of patterns) {
       if (pat.test(boneName)) return jointIdx;

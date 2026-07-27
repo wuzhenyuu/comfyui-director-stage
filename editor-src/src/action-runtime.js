@@ -12,7 +12,7 @@
  * 动作本身（target 位置）仍每帧推进，视觉上连续。
  */
 import * as THREE from "three";
-import { getAction, ensureRig, updateRigFrame, samplePose, isClipActionId, findClip, getClipActions } from "./action-presets.js";
+import { getAction, ensureRig, updateRigFrame, samplePose, mapRigPoint, isClipActionId, findClip, getClipActions } from "./action-presets.js";
 
 /** 动作切换混合时长（秒） */
 const BLEND_TIME = 0.28;
@@ -25,6 +25,7 @@ const _tmpQTarget = new THREE.Quaternion();
 const _tmpQFrom = new THREE.Quaternion();
 const _tmpQFist = new THREE.Quaternion();
 const _tmpBase = new THREE.Vector3();
+const _tmpQParent = new THREE.Quaternion();
 const _Z_AXIS = new THREE.Vector3(0, 0, 1);
 
 /**
@@ -75,7 +76,7 @@ function captureCurrentPose(entry, rig) {
   if (rig?.pelvis && rig.pelvisBaseWorld) {
     // P1-fix：pelvisBaseWorld 是捕获帧坐标，先映射到当前帧再求偏移
     _tmpBase.copy(rig.pelvisBaseWorld);
-    if (rig._dq) _tmpBase.applyQuaternion(rig._dq).add(rig._dp);
+    mapRigPoint(rig, _tmpBase); // P2-fix：统一支点/scale 数学
     rig.pelvis.getWorldPosition(from.pelvis).sub(_tmpBase);
     from.pelvisWorldQuat = rig.pelvis.getWorldQuaternion(new THREE.Quaternion());
   }
@@ -387,24 +388,29 @@ export class ActionRuntime {
     // 骨盆世界偏移 → 骨骼本地坐标
     if (rig.pelvis && rig.pelvisBaseWorld && rig.pelvis.parent) {
       _tmpW.copy(rig.pelvisBaseWorld).add(out.pelvis);
-      if (rig._dq) _tmpW.applyQuaternion(rig._dq).add(rig._dp); // P1-fix：映射到当前帧
+      mapRigPoint(rig, _tmpW); // P2-fix：映射到当前帧（正确支点 + scale）
       if (blending) {
         _tmpFrom.copy(rig.pelvisBaseWorld).add(state.blendFrom.pelvis);
-        if (rig._dq) _tmpFrom.applyQuaternion(rig._dq).add(rig._dp);
+        mapRigPoint(rig, _tmpFrom);
         _tmpW.lerpVectors(_tmpFrom, _tmpW, b);
       }
       rig.pelvis.position.copy(rig.pelvis.parent.worldToLocal(_tmpW));
     }
 
     // 骨盆旋转（lie/punch 等驱动躯干的动作）：世界空间 delta 四元数 → 本地
-    // world = delta * base；混合时从当前世界旋转 slerp 到目标
-    if (rig.pelvis && rig.pelvisBaseWorldQuat && rig.pelvisParentWorldQuatInv && out.pelvisRot) {
+    // world = dq * delta * base（P2-fix：左乘模型 delta 旋转 dq，模型旋转后躯干轴跟随）；
+    // 混合时从当前世界旋转 slerp 到目标
+    if (rig.pelvis && rig.pelvisBaseWorldQuat && rig.pelvis.parent && out.pelvisRot) {
       _tmpQTarget.copy(out.pelvisRot).multiply(rig.pelvisBaseWorldQuat);
+      if (rig._dq) _tmpQTarget.premultiply(rig._dq);
       if (blending && state.blendFrom.pelvisWorldQuat) {
         _tmpQFrom.copy(state.blendFrom.pelvisWorldQuat).slerp(_tmpQTarget, b);
         _tmpQTarget.copy(_tmpQFrom);
       }
-      rig.pelvis.quaternion.copy(rig.pelvisParentWorldQuatInv).multiply(_tmpQTarget);
+      // P2-fix：父骨世界四元数每帧现算——捕获快照 pelvisParentWorldQuatInv
+      // 在模型旋转后已过期，一次求逆成本可忽略
+      const parentInv = rig.pelvis.parent.getWorldQuaternion(_tmpQParent).invert();
+      rig.pelvis.quaternion.copy(parentInv).multiply(_tmpQTarget);
     }
 
     // 手指握拳（punch 等）：局部 Z 轴旋转，右手 +Z / 左手 -Z（实测弯曲轴），

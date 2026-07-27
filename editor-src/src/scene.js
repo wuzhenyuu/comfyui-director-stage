@@ -463,13 +463,16 @@ function drawProps2D(cameraRef, w, h) {
   if (!entries.length) return;
 
   const selected = typeof pm.getSelected === "function" ? pm.getSelected() : null;
-  const centerV = new THREE.Vector3();
+  const centerV = _propCenterV;
 
   for (const entry of entries) {
     const root = entry?.mesh;
     if (!root || !isVisibleInTree(root)) continue;
 
-    root.updateWorldMatrix(true, true);
+    // P2-3：原每帧 root.updateWorldMatrix(true, true) 强制递归重算整棵子树。
+    // renderLoop 每帧已调 scene.updateMatrixWorld()，此处用非强制版本——仅变换脏标记子树重算，
+    // 未动的道具零开销；独立调用路径下行为仍正确（脏标记机制保证）。
+    root.updateMatrixWorld();
     let projectedSegments = 0;
     root.traverse((obj) => {
       if (!obj.isMesh || !obj.geometry) return;
@@ -477,7 +480,25 @@ function drawProps2D(cameraRef, w, h) {
     });
 
     // 极端情况下（几何体为空/全部被裁剪）仍画包围盒，保证道具可见
-    const box = new THREE.Box3().setFromObject(root);
+    // P2-3：Box3 按 root 变换签名缓存——matrixWorld 未变时跳过每帧的 setFromObject
+    //（子树 traverse + 每 mesh 8 角点变换 + 新 Box3 分配）。道具只有 root 被拖拽，
+    // 子节点不独立运动，root 签名 + mesh 数量足以判定失效。
+    let boxCache = entry.__dsBoxCache;
+    if (!boxCache) {
+      boxCache = entry.__dsBoxCache = { box: new THREE.Box3(), sig: new Float64Array(16), count: -1 };
+      boxCache.sig.fill(NaN);
+    }
+    const me = root.matrixWorld.elements;
+    let meshCount = 0;
+    root.traverse((o) => { if (o.isMesh) meshCount++; });
+    let stale = boxCache.count !== meshCount;
+    if (!stale) for (let i = 0; i < 16; i++) { if (boxCache.sig[i] !== me[i]) { stale = true; break; } }
+    if (stale) {
+      boxCache.box.setFromObject(root);
+      boxCache.count = meshCount;
+      for (let i = 0; i < 16; i++) boxCache.sig[i] = me[i];
+    }
+    const box = boxCache.box;
     if (!box.isEmpty()) {
       if (projectedSegments === 0 || entry === selected) {
         drawBoundingBox(box, cameraRef, w, h, entry === selected);
@@ -513,14 +534,20 @@ function getMeshColor(obj, fallback = "#5b8def") {
   return mat?.color ? `#${mat.color.getHexString()}` : fallback;
 }
 
+// P2-3：投影复用 scratch——drawMeshEdges 每段边 2 次调用，原每次 vec.clone() 新分配 Vector3
+//（上限 3000 段 → 单道具每帧 ~6000 次分配）。
+const _projV = new THREE.Vector3();
+const _propCenterV = new THREE.Vector3();
+function projectPointInto(vec, cameraRef, w, h, out) {
+  _projV.copy(vec).project(cameraRef);
+  out.x = (_projV.x + 1) / 2 * w;
+  out.y = (1 - _projV.y) / 2 * h;
+  out.behind = _projV.z < -1 || _projV.z > 1;
+  return out;
+}
+
 function projectPoint(vec, cameraRef, w, h) {
-  const p = vec.clone().project(cameraRef);
-  const behind = p.z < -1 || p.z > 1;
-  return {
-    x: (p.x + 1) / 2 * w,
-    y: (1 - p.y) / 2 * h,
-    behind,
-  };
+  return projectPointInto(vec, cameraRef, w, h, { x: 0, y: 0, behind: false });
 }
 
 function drawMeshEdges(mesh, cameraRef, w, h, selected) {
@@ -544,8 +571,11 @@ function drawMeshEdges(mesh, cameraRef, w, h, selected) {
   const totalSegments = Math.floor(pos.count / 2);
   const stride = Math.max(1, Math.ceil(totalSegments / maxSegments));
 
-  const a = new THREE.Vector3();
-  const b = new THREE.Vector3();
+  // P2-3：端点/投影对象模块级复用（原每帧每 mesh 2 个 Vector3 + 每段 2 个投影对象）
+  const a = _edgeA;
+  const b = _edgeB;
+  const pa = _edgePA;
+  const pb = _edgePB;
   let drawn = 0;
 
   ctx2d.beginPath();
@@ -553,8 +583,8 @@ function drawMeshEdges(mesh, cameraRef, w, h, selected) {
     const i = seg * 2;
     a.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
     b.fromBufferAttribute(pos, i + 1).applyMatrix4(mesh.matrixWorld);
-    const pa = projectPoint(a, cameraRef, w, h);
-    const pb = projectPoint(b, cameraRef, w, h);
+    projectPointInto(a, cameraRef, w, h, pa);
+    projectPointInto(b, cameraRef, w, h, pb);
     if (pa.behind || pb.behind) continue;
     if (paint) {
       ctx2d.moveTo(pa.x, pa.y);
@@ -573,26 +603,34 @@ function drawMeshEdges(mesh, cameraRef, w, h, selected) {
   return drawn;
 }
 
+// P2-3：包围盒角点/边表模块级复用（原每帧每选中道具 8 个 Vector3 + 8 个投影对象 + 2 个数组）
+const _edgeA = new THREE.Vector3();
+const _edgeB = new THREE.Vector3();
+const _edgePA = { x: 0, y: 0, behind: false };
+const _edgePB = { x: 0, y: 0, behind: false };
+const _bbV = new THREE.Vector3();
+const _bbCorners = Array.from({ length: 8 }, () => ({ x: 0, y: 0, behind: false }));
+const _BB_OFF = [[0,0,0],[1,0,0],[1,0,1],[0,0,1],[0,1,0],[1,1,0],[1,1,1],[0,1,1]];
+const _BB_EDGES = [
+  [0,1],[1,2],[2,3],[3,0],
+  [4,5],[5,6],[6,7],[7,4],
+  [0,4],[1,5],[2,6],[3,7],
+];
+
 function drawBoundingBox(box, cameraRef, w, h, selected) {
   if (!paint2dEnabled) return; // WebGL 模式：包围盒由 3D 场景本身呈现
   const min = box.min;
   const max = box.max;
-  const corners = [
-    [min.x, min.y, min.z], [max.x, min.y, min.z],
-    [max.x, min.y, max.z], [min.x, min.y, max.z],
-    [min.x, max.y, min.z], [max.x, max.y, min.z],
-    [max.x, max.y, max.z], [min.x, max.y, max.z],
-  ].map((p) => projectPoint(new THREE.Vector3(p[0], p[1], p[2]), cameraRef, w, h));
-
-  const edges = [
-    [0,1],[1,2],[2,3],[3,0],
-    [4,5],[5,6],[6,7],[7,4],
-    [0,4],[1,5],[2,6],[3,7],
-  ];
+  for (let i = 0; i < 8; i++) {
+    const o = _BB_OFF[i];
+    _bbV.set(o[0] ? max.x : min.x, o[1] ? max.y : min.y, o[2] ? max.z : min.z);
+    projectPointInto(_bbV, cameraRef, w, h, _bbCorners[i]);
+  }
+  const corners = _bbCorners;
 
   ctx2d.beginPath();
   let drawn = 0;
-  for (const [ia, ib] of edges) {
+  for (const [ia, ib] of _BB_EDGES) {
     const pa = corners[ia];
     const pb = corners[ib];
     if (pa.behind || pb.behind) continue;

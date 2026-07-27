@@ -1241,8 +1241,7 @@ async function onApply() {
         characters,
       });
       hideProgress();
-      // P3-2：导出后恢复骨骼标记/Gizmo
-      boneEditor.endExport();
+      // P2-1：boneEditor.endExport 移入 finally（导出中途抛错时标记/Gizmo 不再永久隐藏）
 
       // Post manifest（安全：使用协议层解析的父窗口 origin）
       const origin = window.__ds?._protocolOrigin || location.origin;
@@ -1263,6 +1262,8 @@ async function onApply() {
     showToast(`❌ 导出失败：${err.message || err}`, true);
   } finally {
     hideProgress();
+    // P2-1：endExport 在 _exportSaved 为空时是 no-op，未 begin/非骨骼模式下调用安全
+    boneEditor.endExport();
     skeletonHelpers.endExport();
     btnApply.disabled = false;
     btnCancel.disabled = false;
@@ -1561,6 +1562,7 @@ const _dsRef = {
   // Batch export（P3-0：包装隐藏骨骼线，避免混入 3D 通道）
   performBatchExport: async (enabledPasses) => {
     skeletonHelpers.beginExport();
+    boneEditor.beginExport(); // P2-5：测试钩子路径同样隐藏骨骼标记/Gizmo（成对 begin/end）
     try {
       return await performBatchExport({
         cameraManager,
@@ -1574,6 +1576,7 @@ const _dsRef = {
         characters: getCharacterGroups(),
       });
     } finally {
+      boneEditor.endExport();
       skeletonHelpers.endExport();
     }
   },
@@ -1640,6 +1643,33 @@ updateStatus();
 const _detWorld = new THREE.Matrix4();
 const _detLocal = new THREE.Matrix4();
 
+// P2-4：IK 求解复用临时对象——solveGLB_CCD/applyWorldRotation 同步不可重入，模块级复用安全。
+// 原每帧新建 chains 字面量 + 每链 ~4 个 Vector3 + pole 段 ~8 个 + applyWorldRotation 3 个 Quaternion clone，
+// 活动角色 60fps 下产生 50+ 个短生命周期对象，持续 minor GC。
+const _IK_CHAINS = {
+  rightArm: { root: 2, mid: 3, end: 4 },
+  leftArm:  { root: 5, mid: 6, end: 7 },
+  rightLeg: { root: 8, mid: 9, end: 10 },
+  leftLeg:  { root: 11, mid: 12, end: 13 },
+};
+const _chainBones = [null, null, null];
+const _rootNow = new THREE.Vector3();
+const _rootDelta = new THREE.Vector3();
+const _ccdEV = new THREE.Vector3();
+const _ccdBV = new THREE.Vector3();
+const _ccdDV = new THREE.Vector3();
+const _ccdQ = new THREE.Quaternion();
+const _ccdRP = new THREE.Vector3();
+const _ccdEP = new THREE.Vector3();
+const _ccdMP = new THREE.Vector3();
+const _ccdAxis = new THREE.Vector3();
+const _ccdMProj = new THREE.Vector3();
+const _ccdPProj = new THREE.Vector3();
+const _ccdCross = new THREE.Vector3();
+const _awPQ = new THREE.Quaternion();
+const _awLocal = new THREE.Quaternion();
+const _awInv = new THREE.Quaternion();
+
 // P1-fix：脚钉地跟踪根骨——优先 rigRoot（hips/pelvis），退化到 joint 1（Neck）
 const _rigRootBone = (jm) => jm?.get?.("rigRoot") || jm?.get?.(1) || null;
 
@@ -1664,18 +1694,17 @@ function solveGLB_IK(data) {
     } else {
       const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
-        const nowPos = new THREE.Vector3();
-        rootBone.getWorldPosition(nowPos);
-        const delta = nowPos.clone().sub(data._rootPrev);
-        if (delta.length() > 0.001) {
+        rootBone.getWorldPosition(_rootNow);
+        _rootDelta.copy(_rootNow).sub(data._rootPrev);
+        if (_rootDelta.length() > 0.001) {
           for (const leg of ["rightLeg", "leftLeg"]) {
             if (ikTargets[leg]) {
-              ikTargets[leg].target.position.sub(delta);
-              ikTargets[leg].pole.position.sub(delta);
+              ikTargets[leg].target.position.sub(_rootDelta);
+              ikTargets[leg].pole.position.sub(_rootDelta);
             }
           }
         }
-        data._rootPrev.copy(nowPos);
+        data._rootPrev.copy(_rootNow);
       }
     }
   } else {
@@ -1683,19 +1712,16 @@ function solveGLB_IK(data) {
     data._rootPrev = null;
   }
 
-  // IK 求解四链
-  const chains = {
-    rightArm: { root: 2, mid: 3, end: 4 },
-    leftArm:  { root: 5, mid: 6, end: 7 },
-    rightLeg: { root: 8, mid: 9, end: 10 },
-    leftLeg:  { root: 11, mid: 12, end: 13 },
-  };
-
-  for (const [name, chain] of Object.entries(chains)) {
+  // IK 求解四链（P2-4：chains 提升为模块常量，chainBones 复用 scratch 数组）
+  for (const name in _IK_CHAINS) {
+    const chain = _IK_CHAINS[name];
     const target = ikTargets[name];
     if (!target) continue;
-    const chainBones = [chain.root, chain.mid, chain.end].map(i => jointMap.get(i)).filter(Boolean);
-    if (chainBones.length < 3) continue;
+    _chainBones[0] = jointMap.get(chain.root);
+    _chainBones[1] = jointMap.get(chain.mid);
+    _chainBones[2] = jointMap.get(chain.end);
+    if (!_chainBones[0] || !_chainBones[1] || !_chainBones[2]) continue;
+    const chainBones = _chainBones;
 
     // P2-fix：原无条件求解两遍（无 snap 一遍 + 带 snap 一遍）。
     // 仅当存在 detachedEnds 时才走带 snap 的单次求解，否则一次普通求解。
@@ -1726,12 +1752,13 @@ function snapDetachedEnd(det) {
 }
 
 // 简化 CCD IK（针对 GLB 骨骼）。snapEnd：可选回调，在每次量测末端前调用（扁平骨架贴脚）
+// P2-4：临时向量/四元数全部模块级复用（函数同步执行、不可重入，安全）
 function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001, snapEnd = null) {
   const [root, mid, end] = chainBones;
-  const ev = new THREE.Vector3();
-  const bv = new THREE.Vector3();
-  const dv = new THREE.Vector3();
-  const q = new THREE.Quaternion();
+  const ev = _ccdEV;
+  const bv = _ccdBV;
+  const dv = _ccdDV;
+  const q = _ccdQ;
 
   for (let iter = 0; iter < maxIter; iter++) {
     snapEnd?.();
@@ -1766,36 +1793,37 @@ function solveGLB_CCD(chainBones, targetPos, polePos, maxIter = 10, tol = 0.001,
   }
   snapEnd?.();
 
-  // Pole 约束
+  // Pole 约束（P2-4：复用模块级向量，零分配）
   if (polePos) {
-    const rp = new THREE.Vector3(); root.getWorldPosition(rp);
-    const ep = new THREE.Vector3(); end.getWorldPosition(ep);
-    const mp = new THREE.Vector3(); mid.getWorldPosition(mp);
-    const axis = ep.clone().sub(rp).normalize();
-    const mproj = mp.clone().sub(rp);
-    const pproj = polePos.clone().sub(rp);
-    mproj.sub(axis.clone().multiplyScalar(mproj.dot(axis)));
-    pproj.sub(axis.clone().multiplyScalar(pproj.dot(axis)));
-    if (mproj.length() > 1e-6 && pproj.length() > 1e-6) {
-      mproj.normalize(); pproj.normalize();
-      const dot = Math.max(-1, Math.min(1, mproj.dot(pproj)));
+    root.getWorldPosition(_ccdRP);
+    end.getWorldPosition(_ccdEP);
+    mid.getWorldPosition(_ccdMP);
+    _ccdAxis.copy(_ccdEP).sub(_ccdRP).normalize();
+    _ccdMProj.copy(_ccdMP).sub(_ccdRP);
+    _ccdPProj.copy(polePos).sub(_ccdRP);
+    _ccdMProj.addScaledVector(_ccdAxis, -_ccdMProj.dot(_ccdAxis));
+    _ccdPProj.addScaledVector(_ccdAxis, -_ccdPProj.dot(_ccdAxis));
+    if (_ccdMProj.length() > 1e-6 && _ccdPProj.length() > 1e-6) {
+      _ccdMProj.normalize(); _ccdPProj.normalize();
+      const dot = Math.max(-1, Math.min(1, _ccdMProj.dot(_ccdPProj)));
       const angle = Math.acos(dot);
       if (angle > 1e-6) {
-        const cross = new THREE.Vector3().crossVectors(mproj, pproj);
-        q.setFromAxisAngle(axis, cross.dot(axis) > 0 ? angle : -angle);
+        _ccdCross.crossVectors(_ccdMProj, _ccdPProj);
+        q.setFromAxisAngle(_ccdAxis, _ccdCross.dot(_ccdAxis) > 0 ? angle : -angle);
         applyWorldRotation(root, q);
       }
     }
   }
 }
 
+// P2-4：复用模块级四元数（原每次 3 个 Quaternion clone）
 function applyWorldRotation(bone, worldQ) {
-  const pq = new THREE.Quaternion();
   if (bone.parent && bone.parent.isBone) {
-    bone.parent.getWorldQuaternion(pq);
-    pq.invert();
-    const localQ = pq.clone().multiply(worldQ).multiply(pq.clone().invert());
-    bone.quaternion.premultiply(localQ);
+    bone.parent.getWorldQuaternion(_awPQ);
+    _awPQ.invert();
+    _awInv.copy(_awPQ).invert(); // 父骨世界四元数（未取逆）
+    _awLocal.copy(_awPQ).multiply(worldQ).multiply(_awInv);
+    bone.quaternion.premultiply(_awLocal);
   } else {
     bone.quaternion.premultiply(worldQ);
   }
@@ -1822,38 +1850,33 @@ function solveVRM_IK(data) {
     } else {
       const rootBone = _rigRootBone(jointMap);
       if (rootBone) {
-        const nowPos = new THREE.Vector3();
-        rootBone.getWorldPosition(nowPos);
-        const delta = nowPos.clone().sub(data._rootPrev);
-        if (delta.length() > 0.001) {
+        rootBone.getWorldPosition(_rootNow);
+        _rootDelta.copy(_rootNow).sub(data._rootPrev);
+        if (_rootDelta.length() > 0.001) {
           for (const leg of ["rightLeg", "leftLeg"]) {
             if (ikTargets[leg]) {
-              ikTargets[leg].target.position.sub(delta);
-              ikTargets[leg].pole.position.sub(delta);
+              ikTargets[leg].target.position.sub(_rootDelta);
+              ikTargets[leg].pole.position.sub(_rootDelta);
             }
           }
         }
-        data._rootPrev.copy(nowPos);
+        data._rootPrev.copy(_rootNow);
       }
     }
   } else {
     data._rootPrev = null;
   }
 
-  // IK 求解四链（复用 solveGLB_CCD）
-  const chains = {
-    rightArm: { root: 2, mid: 3, end: 4 },
-    leftArm:  { root: 5, mid: 6, end: 7 },
-    rightLeg: { root: 8, mid: 9, end: 10 },
-    leftLeg:  { root: 11, mid: 12, end: 13 },
-  };
-
-  for (const [name, chain] of Object.entries(chains)) {
+  // IK 求解四链（复用 solveGLB_CCD；P2-4：模块常量 + scratch 数组）
+  for (const name in _IK_CHAINS) {
+    const chain = _IK_CHAINS[name];
     const target = ikTargets[name];
     if (!target) continue;
-    const chainBones = [chain.root, chain.mid, chain.end].map(i => jointMap.get(i)).filter(Boolean);
-    if (chainBones.length < 3) continue;
-    solveGLB_CCD(chainBones, target.target.position, target.pole.position);
+    _chainBones[0] = jointMap.get(chain.root);
+    _chainBones[1] = jointMap.get(chain.mid);
+    _chainBones[2] = jointMap.get(chain.end);
+    if (!_chainBones[0] || !_chainBones[1] || !_chainBones[2]) continue;
+    solveGLB_CCD(_chainBones, target.target.position, target.pole.position);
   }
 
   // 刷新骨骼世界矩阵
@@ -1894,8 +1917,13 @@ function renderLoop(ts) {
     // 2D 模式没有 WebGL render 自动更新矩阵，必须手动更新（拾取/IK/投影全依赖 matrixWorld）
     scene.updateMatrixWorld();
     if (ac) {
-      ac.pos = ac.camera.position.toArray();
-      ac.target = orbit.target.toArray();
+      // P2-4：复用数组原地写（原每帧 toArray()×2 新分配；serialize 按引用读取，值始终最新）
+      if (!Array.isArray(ac.pos) || ac.pos.length !== 3) ac.pos = [0, 0, 0];
+      if (!Array.isArray(ac.target) || ac.target.length !== 3) ac.target = [0, 0, 0];
+      const cp = ac.camera.position;
+      ac.pos[0] = cp.x; ac.pos[1] = cp.y; ac.pos[2] = cp.z;
+      const ct = orbit.target;
+      ac.target[0] = ct.x; ac.target[1] = ct.y; ac.target[2] = ct.z;
     }
 
     // P3-1 3D-only：火柴人永久隐藏（防御性每帧压制——restore/setActive/导入等路径可能重新点亮）

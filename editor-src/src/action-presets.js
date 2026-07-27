@@ -115,6 +115,8 @@ export function ensureRig(entry) {
   // （home/anchor/shoulder 等）映射到当前帧，角色移动/旋转后动作不再"飞回"原位。
   rig._capturePos = m.position.clone();
   rig._captureQuat = m.quaternion.clone();
+  // P2-fix：记录捕获时刻的缩放（delta 随动支持运行时均匀缩放）
+  rig._captureScale = m.scale.x || 1;
 
   // 初始 IK 姿势（= 站立基准）
   // 修复：从骨骼世界坐标推算 home，而非当前的 IK 球位置。
@@ -218,13 +220,15 @@ export function ensureRig(entry) {
   const VRM_JOINT = { proximal: 1, intermediate: 2, distal: 3 };
   rig.fingers = { right: [], left: [] };
   for (const b of entry.allBones || []) {
-    const m = b?.name?.match(/(left|right).*?(thumb|index|middle|ring|pinky)(?:_?(\d)|(proximal|intermediate|distal))/i);
+    // P2-fix：补 VRM 小指别名 little（leftLittleProximal 等），归一视同 pinky
+    const m = b?.name?.match(/(left|right).*?(thumb|index|middle|ring|pinky|little)(?:_?(\d)|(proximal|intermediate|distal))/i);
     if (!m) continue;
     const joint = m[3] ? +m[3] : VRM_JOINT[m[4].toLowerCase()];
     if (!joint || joint < 1 || joint > 3) continue; // 跳过指尖末节
     const side = m[1].toLowerCase();
     if (side !== "right" && side !== "left") continue;
-    rig.fingers[side].push({ bone: b, baseQuat: b.quaternion.clone(), joint, finger: m[2].toLowerCase() });
+    const fingerRaw = m[2].toLowerCase();
+    rig.fingers[side].push({ bone: b, baseQuat: b.quaternion.clone(), joint, finger: fingerRaw === "little" ? "pinky" : fingerRaw });
   }
 
   entry._rig = rig;
@@ -236,10 +240,20 @@ export function invalidateRig(entry) {
   if (entry) entry._rig = null;
 }
 
+const _tmpCaptureScaled = new THREE.Vector3();
+
 /**
  * P1-fix：每帧刷新 rig 的 delta 变换（捕获帧 → 当前帧）。
  * 角色被 bodyMover 移动/旋转后，缓存的世界坐标数据通过该 delta 随动，
  * 无需失效重捕（避免在动作播放中重捕到动作中间姿势污染 home）。
+ *
+ * P2-fix（旋转支点 + scale）：delta 旋转的正确支点是【捕获时刻的模型原点】
+ * （模型绕自身 model.position 旋转），而非世界原点。完整映射式：
+ *   v' = ds·dq·(v − capturePos) + pos_now
+ *      = ds·dq·v + (pos_now − ds·dq·capturePos)
+ * 故 _dp = pos_now − ds·dq·capturePos，_ds = 当前缩放 / 捕获缩放（仅支持均匀缩放，
+ * 非均匀缩放取 x 分量）。dq=I 且 ds=1 时退化为原平移公式 _dp = pos_now − capturePos，
+ * 平移随动行为与此前完全一致（零漂移回归不变）。
  */
 export function updateRigFrame(entry) {
   const rig = entry?._rig;
@@ -247,14 +261,32 @@ export function updateRigFrame(entry) {
   if (!rig._dq) {
     rig._dq = new THREE.Quaternion();
     rig._dp = new THREE.Vector3();
+    rig._ds = 1;
     rig._captureQuatInv = rig._captureQuat
       ? rig._captureQuat.clone().invert()
       : new THREE.Quaternion();
     if (!rig._capturePos) rig._capturePos = entry.model.position.clone();
+    if (!rig._captureScale) rig._captureScale = entry.model.scale.x || 1;
   }
   rig._dq.copy(entry.model.quaternion).multiply(rig._captureQuatInv);
-  rig._dp.copy(entry.model.position).sub(rig._capturePos);
+  const s = entry.model.scale.x / (rig._captureScale || 1);
+  rig._ds = Number.isFinite(s) && s > 0 ? s : 1;
+  _tmpCaptureScaled.copy(rig._capturePos).multiplyScalar(rig._ds).applyQuaternion(rig._dq);
+  rig._dp.copy(entry.model.position).sub(_tmpCaptureScaled);
   return rig;
+}
+
+/**
+ * P2-fix：把捕获帧的世界坐标点映射到当前帧（v' = ds·dq·v + dp）。
+ * 所有 delta 随动消费点统一走此函数，保证支点/scale 数学一致。
+ * @param {object} rig — updateRigFrame 刷新后的 rig
+ * @param {THREE.Vector3} v — 原地修改
+ * @returns {THREE.Vector3} v
+ */
+export function mapRigPoint(rig, v) {
+  if (!rig || !rig._dq) return v;
+  if (rig._ds && rig._ds !== 1) v.multiplyScalar(rig._ds);
+  return v.applyQuaternion(rig._dq).add(rig._dp);
 }
 
 /** 为 rig 分配/复用采样输出缓冲（避免每帧分配） */
@@ -510,14 +542,15 @@ export function samplePose(entry, actionId, time, k = 1, out = null) {
   }
 
   // P1-fix：把捕获帧的世界坐标输出映射到当前帧（模型平移/旋转随动）。
+  // P2-fix：统一走 mapRigPoint（正确支点 + scale）。
   // 骨盆部分在 action-runtime._applySample 中处理（其 worldToLocal 用当前矩阵）。
   if (rig._dq) {
     for (const name of CHAINS) {
       if (!written[name]) continue; // 未重写的链保留上帧值，不得重复叠加 delta
       const c = out.chains[name];
       if (!c) continue;
-      c.target.applyQuaternion(rig._dq).add(rig._dp);
-      c.pole.applyQuaternion(rig._dq).add(rig._dp);
+      mapRigPoint(rig, c.target);
+      mapRigPoint(rig, c.pole);
     }
   }
 

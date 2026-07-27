@@ -1,4 +1,9 @@
-/** real-env-repro3.mjs — 真实环境复现：加载示例工作流 → 点「打开导演台」→ 查 iframe */
+/** real-env-verify.mjs — 真实环境验证：加载示例工作流 → 点「打开导演台」→ 查 iframe
+ *
+ * ⚠️ 前置条件：需先在本地启动 ComfyUI（默认 http://127.0.0.1:8388，可用环境变量
+ * COMFYUI_API 覆盖）。脚本开头做可达性预检：服务不可达时输出 SKIP 并以退出码 0 结束，
+ * 避免在未启动 ComfyUI 的环境中恒红、稀释测试信号（P2-fix）。
+ */
 import { createRequire } from "module";
 const require = createRequire("C:/Users/Administrator/AppData/Roaming/npm/node_modules/");
 const { chromium } = require("playwright");
@@ -7,6 +12,21 @@ import path from "path";
 import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.join(__dirname, "out");
+
+const COMFYUI_URL = process.env.COMFYUI_API || "http://127.0.0.1:8388/";
+
+// ---- ComfyUI 可达性预检：不可达 → skip（exit 0），不算失败 ----
+try {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  await fetch(COMFYUI_URL, { signal: ctrl.signal });
+  clearTimeout(timer);
+  console.log("ComfyUI 可达:", COMFYUI_URL);
+} catch (e) {
+  console.log(`SKIP: ComfyUI 不可达（${COMFYUI_URL}，${e.message}）`);
+  console.log("本测试需先启动 ComfyUI（端口 8388）后再运行；跳过不算失败。");
+  process.exit(0);
+}
 
 const workflow = fs.readFileSync(path.resolve(__dirname, "../../examples/basic_openpose.json"), "utf-8");
 
@@ -17,7 +37,7 @@ page.on("pageerror", (e) => pageErrors.push(String(e).slice(0, 400)));
 const consoleErrs = [];
 page.on("console", (m) => { if (m.type() === "error") consoleErrs.push(m.text().slice(0, 250)); });
 
-await page.goto("http://127.0.0.1:8388/", { waitUntil: "domcontentloaded" });
+await page.goto(COMFYUI_URL, { waitUntil: "domcontentloaded" });
 // 等 Vue 前端真正就绪：graph canvas 可见
 await page.waitForSelector("canvas", { state: "visible", timeout: 60000 }).catch(() => {});
 await page.waitForFunction(() => window.app?.graph && !document.querySelector(".comfy-loading, [class*='loading']"), null, { timeout: 30000 }).catch(() => {});

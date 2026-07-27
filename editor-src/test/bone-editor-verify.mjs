@@ -682,17 +682,35 @@ if (twoChars) {
     // 多角色下 boneEditor 作用于活动角色；非活动角色通过 jointMap 骨骼近似读取
     const entries = window.__ds?.externalCharacters?.getAll?.() || [];
     const entry = entries[i];
-    if (!entry) return null;
+    if (!entry) { window.__t12cDiag = { idx: i, entryExists: false }; return null; }
     const activeId = window.__ds?.externalCharacters?.activeCharacterId;
     if (entry.id === activeId) return window.__t.readBoneEuler("rightUpperArm");
-    // 非活动角色：在 skeleton 中按规范名/常见名找 UpperArm 骨骼
-    let bone = null;
-    entry.model?.traverse?.((o) => {
-      if (bone || !o.isBone) return;
-      const n = (o.name || "").toLowerCase().replace(/[_\s-]/g, "");
-      if (n.includes("rightupperarm") || n === "upperarmr" || n.includes("upperarmr")) bone = o;
-    });
-    return bone?.rotation ? [bone.rotation.x, bone.rotation.y, bone.rotation.z] : null;
+    // 非活动角色：优先 jointMap（COCO 2 = rightUpperArm，对任意骨架命名均适用）。
+    // 原探针只按规范名/UE 名遍历 skeleton，Mixamo 命名（"RightArm"）不含
+    // "rightupperarm"/"upperarmr" → 取不到 bone → Δchar1=undefined（探针盲区，非真实回归）。
+    let bone = entry.jointMap?.get?.(2) || null;
+    let via = bone ? "jointMap[2]" : null;
+    if (!bone) {
+      entry.model?.traverse?.((o) => {
+        if (bone || !o.isBone) return;
+        const n = (o.name || "").toLowerCase().replace(/[_\s-]/g, "");
+        if (n.includes("rightupperarm") || n === "upperarmr" || n.includes("upperarmr") || n.includes("rightarm")) bone = o;
+      });
+      via = bone ? "name-traverse" : null;
+    }
+    // 12c 诊断：记录读取路径；失败时记录现场（entry/model/jointMap/骨骼名样本）以区分探针盲区 vs 真实回归
+    if (!bone) {
+      const names = [];
+      entry.model?.traverse?.((o) => { if (o.isBone && names.length < 12) names.push(o.name); });
+      window.__t12cDiag = {
+        idx: i, entryExists: true, modelExists: !!entry.model, jointMapExists: !!entry.jointMap,
+        jointMapKeys: entry.jointMap ? [...entry.jointMap.keys()].slice(0, 24) : null,
+        sampleBones: names,
+      };
+      return null;
+    }
+    window.__t12cDiag = { idx: i, via, boneName: bone.name };
+    return bone.rotation ? [bone.rotation.x, bone.rotation.y, bone.rotation.z] : null;
   }, idx);
   // 把活动切回第 1 个角色，验证 apply 只改它（第 1 个是姿态保存来源）
   await page.evaluate(() => {
@@ -712,6 +730,8 @@ if (twoChars) {
   const dChar1 = char1Before && char1After
     ? Math.hypot(char1After[0] - char1Before[0], char1After[1] - char1Before[1], char1After[2] - char1Before[2]) : null;
   console.log("  多角色 apply: Δchar0=", dChar0?.toFixed?.(4), "Δchar1=", dChar1?.toFixed?.(4));
+  const t12cDiag = await page.evaluate(() => window.__t12cDiag || null);
+  if (t12cDiag) console.log("  12c 探针诊断:", JSON.stringify(t12cDiag));
   check("契约12b apply 姿态影响活动角色（char0 rotation 收敛到保存值）",
     char0After !== null && savedEuler !== null &&
     Math.hypot(char0After[0] - savedEuler[0], char0After[1] - savedEuler[1], char0After[2] - savedEuler[2]) < 0.05,
