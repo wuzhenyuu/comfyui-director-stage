@@ -415,25 +415,51 @@ export async function performApply(joints, exportW, exportH, sceneGz, extraPaylo
     throw new Error("当前环境 WebGL 不可用，无法导出 depth/normal 等 3D 通道。");
   }
   const cam = getSceneCamera();
-  const { grid, axes } = getSceneHelpers();
 
-  const prevGrid = grid.visible;
-  const prevAxes = axes.visible;
-  grid.visible = false;
-  axes.visible = false;
+  // P1-4 fix：与 performBatchExport 对齐——渲染前隐藏全部编辑器辅助对象，
+  // 否则 IK 球/骨骼标记/Gizmo/火柴人残留/全景球会污染 depth/normal/preview/lineart。
+  const ds = typeof window !== "undefined" ? window.__ds : null;
+  const propManager = ds?.propManager || null;
+  const boneEditor = ds?.boneEditor || null;
+  // getHiddenObjects 覆盖 grid/axes/道具 Gizmo/figureGroup 残留/全景球
+  const hiddenObjects = getHiddenObjects(propManager);
+  // 防御：外部角色 IK target/pole 球同样隐藏（P1-3 后 M1 正常不含外部角色，双保险）
+  const mgr = ds?.externalCharacters;
+  if (mgr && typeof mgr.getAll === "function") {
+    for (const e of mgr.getAll()) {
+      if (e?.ikTargetsGroup) hiddenObjects.push(e.ikTargetsGroup);
+    }
+  }
+  // 骨骼编辑标记/Gizmo 由本函数自行包裹（调用方 onApply 只在 batch 分支包裹）；
+  // 骨骼线 skeletonHelpers 由 onApply 统一包裹，此处不重复（begin/endExport 非嵌套安全）。
+  boneEditor?.beginExport?.();
 
   const t = Date.now();
 
-  const poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
-  const depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, []);
-  const normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, []);
-  const previewCv = renderPreviewCanvas(scene, cam, renderer, exportW, exportH, []);
+  let poseCv, depthCv, normalCv, previewCv, lineartCv;
+  try {
+    // 无角色场景（joints 为空）：renderOpenPoseCanvas 无法处理空数组（LIMB_SEQ 索引越界），
+    // 输出全黑 openpose 底图，保证「无角色单机位」合法场景 M1 导出不中断。
+    if (joints && joints.length) {
+      poseCv = renderOpenPoseCanvas(joints, cam, exportW, exportH);
+    } else {
+      poseCv = document.createElement("canvas");
+      poseCv.width = exportW;
+      poseCv.height = exportH;
+      const ctx = poseCv.getContext("2d");
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, exportW, exportH);
+    }
+    depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+    normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+    previewCv = renderPreviewCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
 
-  // Lineart from depth+normal
-  const lineartCv = renderLineartCanvas(depthCv, normalCv, exportW, exportH);
-
-  grid.visible = prevGrid;
-  axes.visible = prevAxes;
+    // Lineart from depth+normal
+    lineartCv = renderLineartCanvas(depthCv, normalCv, exportW, exportH);
+  } finally {
+    boneEditor?.endExport?.();
+    restoreGizmo(propManager);
+  }
 
   const [openpose, depth, normal, lineart, preview] = await Promise.all([
     uploadCanvas(poseCv, `director_pose_${t}.png`),

@@ -1213,12 +1213,18 @@ async function onApply() {
     // M2: batch export across all cameras
     const enabledPasses = new Set(["openpose", "depth", "normal", "lineart", "preview"]);
     const characters = getCharacterGroups();
+    // P1-3 fix：外部 3D角色存在时，即使单机位也必须走 batch 路径——
+    // M1 performApply 不产出 mask（manifest.masks 恒空），且多角色 openpose 只画第一个角色。
+    // getCharacterGroups() 依赖 DS_FigureAPI，3D-only 下恒为 []，故必须显式检查 externalManager。
+    const hasExternalChars = (externalManager?.size || 0) > 0;
+    // 有角色（外部 3D角色或旧火柴人）时启用 mask 通道，batch 路径的 mask 分支才会产出 char_masks
+    if (hasExternalChars || characters.length > 0) enabledPasses.add("mask");
 
     // Build scene JSON for serialization
     const sceneJSON = buildSceneJSON(sceneGz);
     setSceneJSON(sceneJSON);
 
-    if (cameraManager.cameras.length > 1 || characters.length > 0) {
+    if (cameraManager.cameras.length > 1 || characters.length > 0 || hasExternalChars) {
       // Multi-camera or multi-character: batch export
       showProgress("导出中…");
       // P3-2：导出前隐藏骨骼标记/Gizmo

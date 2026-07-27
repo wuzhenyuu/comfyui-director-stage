@@ -4,6 +4,59 @@
  * 暴露 window.__ds.exportProject() 和 window.__ds.importProject()
  */
 import { getSceneSettings, setSceneSettings } from "./scene-settings-panel.js";
+import { ExternalCharacterManager } from "./external-characters.js";
+
+/**
+ * P1-fix（infra-1）：工程导入后刷新相机绑定。
+ * cameraManager.deserialize() 会新建 PerspectiveCamera 对象，而 orbit controls /
+ * propManager 仍持有导入前的旧相机对象 → 视图冻结（main.js 的 syncActiveCamera
+ * 未暴露到 window.__ds，此处做等价绑定刷新）。
+ */
+function _syncActiveCameraBinding() {
+  const ds = window.__ds;
+  const cm = ds?.cameraManager;
+  const ac = cm?.getActiveCamera?.();
+  if (!ac?.camera) return;
+  if (typeof cm.syncOrbitToActiveCamera === "function" && window.__ds__orbit) {
+    cm.syncOrbitToActiveCamera(window.__ds__orbit);
+  }
+  const pm = ds?.propManager;
+  if (pm) {
+    pm.camera = ac.camera;
+    if (pm.tctrl) pm.tctrl.camera = ac.camera;
+  }
+}
+
+/**
+ * P1-fix（infra-2）：restore 完成后应用快照中的骨骼编辑姿势。
+ * @param {ExternalCharacterManager} manager
+ * @param {{ characters?: object[] }} data
+ */
+function _applySnapshotBones(manager, data) {
+  const be = window.__ds?.boneEditor;
+  if (!be?.applyPoseBones || !Array.isArray(data?.characters)) return;
+  for (const c of data.characters) {
+    if (!c?.bones || typeof c.bones !== "object") continue;
+    const entry = manager.get?.(c.id);
+    if (!entry) continue;
+    try {
+      // positions:"all" + 内含 _skipIKFrames=60，防止 solver 覆盖刚写入的骨骼
+      be.applyPoseBones(c.bones, { entry, positions: "all" });
+    } catch (e) {
+      console.warn("[工程IO] 骨骼姿势恢复失败:", e);
+    }
+  }
+}
+
+// P1-fix（infra-2）：包装 prototype.restore，在模型/变换/IK 恢复之后补应用骨骼姿势。
+// 包 prototype 而非实例：本模块加载时 main.js 尚未创建 manager 实例；同时覆盖
+// 工程导入（_doImport）与 init 协议（main.js setupProtocol）两条恢复路径。
+const _origExtRestore = ExternalCharacterManager.prototype.restore;
+ExternalCharacterManager.prototype.restore = async function (data) {
+  const ok = await _origExtRestore.call(this, data);
+  if (ok) _applySnapshotBones(this, data);
+  return ok;
+};
 
 /**
  * 收集完整场景数据
@@ -21,9 +74,10 @@ function collectSceneData() {
     focalLength: ds?.getFocalLength?.() || 35,
   };
 
-  // 收集角色数据
+  // 收集角色数据（P1-fix：schema 恒定——无 DS_FigureAPI（3D-only）时也写 characters: []，
+  // 避免 sceneJSON 随运行模式缺键，下游消费方踩空）
+  const chars = [];
   if (api) {
-    const chars = [];
     const allChars = api.getAllCharacters();
     if (allChars) {
       for (const [id, char] of allChars) {
@@ -58,9 +112,9 @@ function collectSceneData() {
         });
       }
     }
-    data.characters = chars;
-    data.activeCharId = api.getActiveCharacter()?.id || null;
   }
+  data.characters = chars;
+  data.activeCharId = api?.getActiveCharacter?.()?.id || null;
 
   // sceneGz 兼容 — 已通过完整场景数据序列化，不再冗余存储 sceneGz 编码
   // （略去 data.sceneGz 以减小 30-50% 文件体积）
@@ -71,6 +125,14 @@ function collectSceneData() {
     const snap = extMgr.snapshot();
     data.externalCharacters = snap.characters;
     data.activeExternalCharacterId = snap.activeCharacterId;
+    // P1-fix（infra-2）：骨骼编辑姿势随工程/sceneJSON 持久化（脊柱/头/手指等非 IK 链骨骼）
+    const be = ds?.boneEditor;
+    if (be?.capturePoseBones && Array.isArray(data.externalCharacters)) {
+      for (const c of data.externalCharacters) {
+        const entry = extMgr.get?.(c.id);
+        if (entry) c.bones = be.capturePoseBones(entry);
+      }
+    }
   }
 
   // 核心B：自定义姿态预设（随 sceneJSON.posePresets / 工程文件持久化）
@@ -235,6 +297,8 @@ async function _doImport(file) {
       if (ds.cameraManager.deserialize) {
         ds.cameraManager.deserialize(data.cameras);
       }
+      // P1-fix（infra-1）：deserialize 新建了相机对象，刷新 orbit/propManager 绑定，否则视图冻结
+      _syncActiveCameraBinding();
     }
 
     // 6) 恢复场景设置

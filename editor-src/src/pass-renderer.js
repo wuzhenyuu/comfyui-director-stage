@@ -362,11 +362,15 @@ export function renderOpenPoseCanvasMulti(allCharJoints, camera, w, h) {
   const s = Math.min(w, h) / 512;
 
   allCharJoints.forEach((charData, charIdx) => {
+    // P1 修复：空/缺失 joints 直接跳过该角色（3D-only 零角色场景不会走到这里，但防御兜底）
+    if (!charData || !Array.isArray(charData.joints) || charData.joints.length === 0) return;
+
     const color = CHAR_COLORS[charIdx % CHAR_COLORS.length];
     const colorStr = `rgb(${color[0]},${color[1]},${color[2]})`;
 
-    // Project all joints
+    // Project all joints（缺失关节记为 null，下方防御性跳过）
     const pts = charData.joints.map((j) => {
+      if (!j) return null;
       v.copy(j);
       v.project(camera);
       return [((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h];
@@ -377,6 +381,7 @@ export function renderOpenPoseCanvasMulti(allCharJoints, camera, w, h) {
     ctx.lineWidth = 3 * s;
     ctx.lineCap = "round";
     LIMB_SEQ.forEach(([a, b]) => {
+      if (!pts[a] || !pts[b]) return;
       ctx.beginPath();
       ctx.moveTo(pts[a][0], pts[a][1]);
       ctx.lineTo(pts[b][0], pts[b][1]);
@@ -386,6 +391,7 @@ export function renderOpenPoseCanvasMulti(allCharJoints, camera, w, h) {
     // Draw joints
     ctx.fillStyle = colorStr;
     pts.forEach((p) => {
+      if (!p) return;
       ctx.beginPath();
       ctx.arc(p[0], p[1], 3 * s, 0, Math.PI * 2);
       ctx.fill();
@@ -413,9 +419,14 @@ export function renderOpenPoseCanvas(joints, camera, w, h) {
 
   if (!camera) return cv;
 
+  // P1 修复：3D-only 零角色时 getEffectiveJoints() 兜底为空数组/undefined，
+  // 直接返回全黑 canvas（尺寸已正确），避免 LIMB_SEQ 对空 pts 取下标崩溃。
+  if (!Array.isArray(joints) || joints.length === 0) return cv;
+
   camera.updateMatrixWorld();
   const v = new THREE.Vector3();
   const pts = joints.map((j) => {
+    if (!j) return null;
     j.getWorldPosition(v);
     v.project(camera);
     return [((v.x + 1) / 2) * w, ((1 - v.y) / 2) * h];
@@ -434,6 +445,8 @@ export function renderOpenPoseCanvas(joints, camera, w, h) {
 
   ctx.lineCap = "round";
   LIMB_SEQ.forEach(([a, b], i) => {
+    // 稀疏 pts 防御：部分关节缺失时跳过该肢体
+    if (!pts[a] || !pts[b]) return;
     const c = limbColors[i % limbColors.length];
     ctx.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
     ctx.lineWidth = 3 * s;
@@ -444,6 +457,7 @@ export function renderOpenPoseCanvas(joints, camera, w, h) {
   });
 
   pts.forEach((p, j) => {
+    if (!p) return;
     const c = limbColors[j % limbColors.length];
     ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
     ctx.beginPath();

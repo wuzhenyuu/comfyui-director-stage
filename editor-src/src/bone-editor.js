@@ -375,10 +375,13 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
       }
 
       // 重置脚钉地基准，避免 hips 平移后回 IK 模式时腿 target 被 delta 拉飞
-      const neck = entry.jointMap?.get?.(1);
-      if (neck) {
+      // P1-fix（core-1）：与 main.js `_rigRootBone` 对齐——优先 rigRoot（Hips），回退 joint 1。
+      // 上轮 joint1 拆分（Neck + 独立 rigRoot）后此处漏改：基准写入 Neck 世界坐标，
+      // 求解器拿 Hips 世界坐标相减得到恒定 ~0.35m delta → 骨骼编辑/undo 后双脚上浮。
+      const rootBone = entry.jointMap?.get?.("rigRoot") || entry.jointMap?.get?.(1);
+      if (rootBone) {
         if (!entry._rootPrev) entry._rootPrev = new THREE.Vector3();
-        neck.getWorldPosition(entry._rootPrev);
+        rootBone.getWorldPosition(entry._rootPrev);
       }
     }
   }
@@ -702,6 +705,26 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
     return true;
   }
 
+  /**
+   * 快照指定角色（默认活动角色）全部骨骼的局部旋转/位置（按原始骨骼名索引）。
+   * P1-fix（infra-2）：供 project-io 工程/sceneJSON 持久化使用；
+   * 与 applyPoseBones(bones, { entry, positions: "all" }) 互为往返。
+   * @param {object} [entry] — 指定角色（默认活动角色）
+   * @returns {Object<string,{rotation:number[],position:number[]}>}
+   */
+  function capturePoseBones(entry = null) {
+    const target = entry || _activeEntry();
+    const bones = {};
+    for (const b of target?.allBones || []) {
+      if (!b?.isBone) continue;
+      bones[b.name] = {
+        rotation: [_round(b.rotation.x), _round(b.rotation.y), _round(b.rotation.z)],
+        position: [_round(b.position.x, 5), _round(b.position.y, 5), _round(b.position.z, 5)],
+      };
+    }
+    return bones;
+  }
+
   /* ========================= 状态 ========================= */
 
   function getState() {
@@ -998,6 +1021,8 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
     setBoneRotation, setBonePosition, getBoneRotation, getBonePosition,
     // 姿态契约（pose-presets 优先调用）
     snapshotPoseBones, applyPoseBones,
+    // 全骨骼快照（project-io 工程持久化用，按原始骨骼名）
+    capturePoseBones,
     // 同步
     syncIKFromBones,
     // 状态
