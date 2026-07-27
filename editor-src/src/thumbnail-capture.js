@@ -39,7 +39,8 @@ export function captureCameraThumbnail(camera, renderer, scene) {
   const prevClearColor = new THREE.Color();
   renderer.getClearColor(prevClearColor);
   const prevClearAlpha = renderer.getClearAlpha();
-  const prevScissor = renderer.getScissor();
+  const prevScissor = new THREE.Vector4();
+  renderer.getScissor(prevScissor); // three r150+：getScissor(target) 必须传入 Vector4，省略 target 会抛 TypeError（target.copy）
   const prevScissorTest = renderer.getScissorTest();
   const prevViewport = new THREE.Vector4();
   renderer.getViewport(prevViewport);
@@ -51,7 +52,30 @@ export function captureCameraThumbnail(camera, renderer, scene) {
   renderer.setClearColor(new THREE.Color(0x1a1a2e), 1);
   renderer.setScissorTest(false);
   renderer.clear();
-  renderer.render(scene, camera);
+  // 缩略图也是 render-target 渲染：与导出 pass 对齐，临时隐藏编辑器辅助对象
+  // （grid/axes/火柴人/IK球/骨骼线/骨骼标记/全景球），避免混入机位缩略图，
+  // 也避免被导出 render spy 误判为“辅助对象未隐藏”。渲染后恢复原可见性（非强制 true）。
+  const ds = typeof window !== "undefined" ? window.__ds : null;
+  const helperObjects = [];
+  const pushOnce = (o) => { if (o && !helperObjects.includes(o)) helperObjects.push(o); };
+  pushOnce(ds?.figureGroup);
+  pushOnce(ds?.panorama?.getSphere?.());
+  const mgr = ds?.externalCharacters;
+  if (mgr && typeof mgr.getAll === "function") {
+    for (const e of mgr.getAll()) pushOnce(e?.ikTargetsGroup);
+  }
+  scene.traverse((o) => {
+    if (o.type === "GridHelper" || o.type === "AxesHelper") pushOnce(o);
+    else if (typeof o.name === "string" &&
+      (o.name.startsWith("skeleton-helper:") || o.name === "bone-editor-markers")) pushOnce(o);
+  });
+  const savedVis = helperObjects.map((o) => o.visible);
+  try {
+    for (const o of helperObjects) o.visible = false;
+    renderer.render(scene, camera);
+  } finally {
+    helperObjects.forEach((o, i) => { o.visible = savedVis[i]; });
+  }
 
   // 读取像素
   const pixels = new Uint8Array(160 * 120 * 4);
