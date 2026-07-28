@@ -386,6 +386,130 @@ modelLibraryPanel.appendChild(modelLibPanelUI);
 const charPropsUI = createCharPropsPanel();
 charPropsPanelEl.appendChild(charPropsUI.panel);
 
+/* ============ P3-4：3D角色「整体旋转」滑条组（角色属性面板挂载点） ============ */
+// Y 偏航为主滑条；X 俯仰 / Z 翻滚收进折叠区；度数实时显示。
+// 实时预览：input 事件即调 setCharacterRotation（IK/骨骼随动由管理器保证）；
+// undo：每次拖拽手势（pointerdown→pointerup）只在首个 input 压一次栈。
+const extRotationUI = (() => {
+  const root = document.createElement("div");
+  root.id = "ext-rotation-panel";
+  root.style.cssText =
+    "border-bottom:1px solid #2a2f3d;padding:10px 12px;display:flex;flex-direction:column;gap:6px;";
+
+  const header = document.createElement("div");
+  header.style.cssText = "font-weight:600;font-size:12px;color:#c8cddb;display:flex;gap:6px;align-items:center;";
+  header.textContent = "🔄 旋转";
+  const nameSpan = document.createElement("span");
+  nameSpan.id = "ext-rot-name";
+  nameSpan.style.cssText = "flex:1;font-weight:400;font-size:11px;color:#8a90a0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+  header.appendChild(nameSpan);
+  const resetBtn = document.createElement("button");
+  resetBtn.id = "ext-rot-reset";
+  resetBtn.textContent = "归零";
+  resetBtn.title = "旋转全部归零（可撤销）";
+  resetBtn.style.cssText =
+    "padding:2px 8px;font-size:11px;background:#1e2230;border:1px solid #2a2f3d;border-radius:4px;color:#c8cddb;cursor:pointer;";
+  header.appendChild(resetBtn);
+  root.appendChild(header);
+
+  const hint = document.createElement("div");
+  hint.id = "ext-rot-hint";
+  hint.textContent = "请先在「角色」页激活一个 3D角色";
+  hint.style.cssText = "font-size:11px;color:#5a6070;padding:2px 0;display:none;";
+  root.appendChild(hint);
+
+  let _gestureArmed = false; // 拖拽手势：首个 input 压一次 undo
+  const axes = {}; // axis -> { slider, val }
+
+  function makeAxisRow(parent, axis, label, min, max, title) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:#8a90a0;";
+    const lbl = document.createElement("span");
+    lbl.textContent = label;
+    lbl.style.cssText = "min-width:52px;";
+    lbl.title = title;
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = String(min);
+    slider.max = String(max);
+    slider.step = "1";
+    slider.value = "0";
+    slider.id = `ext-rot-${axis.toLowerCase()}`;
+    slider.dataset.axis = axis;
+    slider.style.cssText = "flex:1;accent-color:#2f9e63;min-width:0;";
+    const val = document.createElement("span");
+    val.id = `ext-rot-${axis.toLowerCase()}-val`;
+    val.textContent = "0°";
+    val.style.cssText = "min-width:44px;text-align:right;font-variant-numeric:tabular-nums;";
+    slider.addEventListener("pointerdown", () => { _gestureArmed = true; });
+    slider.addEventListener("keydown", () => { _gestureArmed = true; });
+    slider.addEventListener("input", () => {
+      const entry = externalManager.getActive();
+      if (!entry) return;
+      if (_gestureArmed) { pushUndo(null); _gestureArmed = false; }
+      const deg = parseFloat(slider.value) || 0;
+      externalManager.setCharacterRotation(entry.id, { [axis.toLowerCase()]: deg });
+      val.textContent = `${Math.round(deg)}°`;
+    });
+    row.appendChild(lbl);
+    row.appendChild(slider);
+    row.appendChild(val);
+    parent.appendChild(row);
+    axes[axis.toLowerCase()] = { slider, val };
+  }
+
+  // Y 主滑条（偏航）
+  makeAxisRow(root, "Y", "偏航 Y", -180, 180, "绕竖直轴转身（度）");
+  // X/Z 折叠（次要轴）
+  const details = document.createElement("details");
+  details.id = "ext-rot-details";
+  details.style.cssText = "font-size:11px;color:#8a90a0;";
+  const summary = document.createElement("summary");
+  summary.textContent = "俯仰 X / 翻滚 Z";
+  summary.style.cssText = "cursor:pointer;padding:2px 0;";
+  details.appendChild(summary);
+  makeAxisRow(details, "X", "俯仰 X", -90, 90, "绕水平横轴前倾/后仰（度）");
+  makeAxisRow(details, "Z", "翻滚 Z", -90, 90, "绕前后轴侧倾（度）");
+  root.appendChild(details);
+
+  resetBtn.addEventListener("click", () => {
+    const entry = externalManager.getActive();
+    if (!entry) return;
+    pushUndo(null);
+    externalManager.setCharacterRotation(entry.id, { x: 0, y: 0, z: 0 });
+    sync();
+  });
+
+  /** 从模型当前旋转同步滑条/读数（跳过正在拖拽的滑条） */
+  function sync() {
+    const entry = externalManager.getActive();
+    const has = !!(entry && entry.model);
+    hint.style.display = has ? "none" : "";
+    nameSpan.textContent = has ? (entry.name || entry.id) : "";
+    for (const a of Object.values(axes)) {
+      a.slider.disabled = !has;
+    }
+    resetBtn.disabled = !has;
+    if (!has) return;
+    const rot = externalManager.getCharacterRotation(entry.id);
+    if (!rot) return;
+    for (const [axis, a] of Object.entries(axes)) {
+      const deg = Math.round(rot[axis] ?? 0);
+      if (document.activeElement !== a.slider) a.slider.value = String(deg);
+      a.val.textContent = `${deg}°`;
+    }
+  }
+
+  // 角色增删/激活切换 → 刷新；300ms 轻量轮询覆盖 undo/redo/程序化旋转
+  window.addEventListener("ds-external-char-changed", sync);
+  setInterval(() => { if (root.isConnected) sync(); }, 300);
+
+  charPropsPanelEl.insertBefore(root, charPropsPanelEl.firstChild);
+  sync();
+  return { el: root, sync };
+})();
+window.__dsExtRotationUI = extRotationUI; // 调试/测试钩子
+
 // 场景设置面板
 const sceneSettingsUI = createSceneSettingsPanel();
 sceneSettingsPanelEl.appendChild(sceneSettingsUI.panel);
@@ -1455,6 +1579,18 @@ const _dsRef = {
   moveExternalCharacter: (id, dx, dy, dz) => {
     const entry = id ? externalManager.get(id) : externalManager.getActive();
     return translateExternalCharacter(entry, +dx || 0, +dy || 0, +dz || 0);
+  },
+  // P3-4：3D角色整体旋转契约（Y 偏航为主，支持任意轴；IK/骨骼/openpose 随动）
+  setCharacterRotation: (id, eulerDeg) => {
+    // 兼容省略 id（作用于活动角色）：setCharacterRotation({y:90})
+    let entryId = id, deg = eulerDeg;
+    if (id && typeof id === "object") { deg = id; entryId = null; }
+    const entry = entryId ? externalManager.get(entryId) : externalManager.getActive();
+    return entry ? externalManager.setCharacterRotation(entry.id, deg || {}) : false;
+  },
+  getCharacterRotation: (id) => {
+    const entry = id ? externalManager.get(id) : externalManager.getActive();
+    return entry ? externalManager.getCharacterRotation(entry.id) : null;
   },
   playAction: (entryId, actionId, opts) => actionRuntime.play(entryId, actionId, opts),
   pauseAction: (entryId) => actionRuntime.pause(entryId),

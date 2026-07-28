@@ -89,6 +89,17 @@ function disposeVrmRuntime(entry) {
 
 let _idCounter = 0;
 
+/* ---------- 整体旋转：scratch 对象（函数同步执行、不可重入，安全复用） ---------- */
+const _rotEuler = new THREE.Euler();
+const _rotQNew = new THREE.Quaternion();
+const _rotQOld = new THREE.Quaternion();
+const _rotQDelta = new THREE.Quaternion();
+
+/** 旋转 delta 应用到【世界坐标点】（绕 pivot）：v' = pivot + dq·(v − pivot) */
+function _rotPointAboutPivot(v, pivot, dq) {
+  v.sub(pivot).applyQuaternion(dq).add(pivot);
+}
+
 export class ExternalCharacterManager {
   /**
    * @param {THREE.Scene} scene
@@ -315,6 +326,97 @@ export class ExternalCharacterManager {
       if (!used.has(s)) return s;
     }
     return this.characters.size + this._pendingAdds.size;
+  }
+
+  /**
+   * 整体旋转外部角色（绕模型自身原点 model.position）。
+   *
+   * 语义：把模型旋转【设为】给定欧拉角（度，YXZ 顺序——Y 偏航为主轴，
+   * 与 UI 滑条一致）；缺省轴保持当前值。内部写入 model.quaternion。
+   *
+   * 随动保证（与 translateExternalCharacter 同级契约）：
+   *   1) IK target/pole 世界坐标绕 pivot 同步旋转 delta —— 非播放状态下
+   *      骨骼已被模型带到旋转后位置、IK 球同步到达，求解零漂移；
+   *   2) 动作播放中：samplePose/updateRigFrame 的 dq 路径每帧把 home
+   *      映射到当前帧（P2 预埋的支点公式），target 由采样重写，天然跟随；
+   *   3) 混合中（blendFrom 世界坐标快照）同步旋转，避免 0.28s 混合窗口内
+   *      从旧朝向插值造成瞬时回摆；
+   *   4) 脚钉地基准 _rootPrev 重置 —— 根骨世界位置随模型旋转已变化，
+   *      不重置会把脚钉地误判为根骨漂移、把腿 IK 拉回旋转前位置；
+   *   5) 骨骼标记/SkeletonHelper/openpose 走骨骼世界矩阵，自动跟随。
+   *
+   * @param {string} id
+   * @param {{x?:number, y?:number, z?:number}} eulerDeg — 目标欧拉角（度）
+   * @returns {boolean} 是否成功
+   */
+  setCharacterRotation(id, eulerDeg = {}) {
+    const entry = this.characters.get(id);
+    if (!entry || !entry.model) return false;
+    const m = entry.model;
+
+    // 当前欧拉角（YXZ：与 UI「Y 主、X/Z 次要」一致）
+    _rotEuler.setFromQuaternion(m.quaternion, "YXZ");
+    const toRad = (v, fallback) =>
+      v === undefined || v === null || !Number.isFinite(+v)
+        ? fallback
+        : THREE.MathUtils.degToRad(+v);
+    _rotEuler.set(
+      toRad(eulerDeg.x, _rotEuler.x),
+      toRad(eulerDeg.y, _rotEuler.y),
+      toRad(eulerDeg.z, _rotEuler.z),
+      "YXZ"
+    );
+    _rotQNew.setFromEuler(_rotEuler);
+    if (m.quaternion.angleTo(_rotQNew) < 1e-7) return true; // 无变化
+
+    // 世界空间 delta：dq = qNew · qOld⁻¹（左乘；invert 原地取逆避免分配）
+    _rotQOld.copy(m.quaternion);
+    _rotQDelta.copy(_rotQOld).invert().premultiply(_rotQNew);
+
+    const pivot = m.position; // 模型绕自身原点旋转（updateRigFrame 支点公式同源）
+    m.quaternion.copy(_rotQNew);
+    m.updateMatrixWorld(true);
+
+    // 1) IK target/pole 同步旋转
+    if (entry.ikTargets) {
+      for (const t of Object.values(entry.ikTargets)) {
+        if (t?.target) _rotPointAboutPivot(t.target.position, pivot, _rotQDelta);
+        if (t?.pole) _rotPointAboutPivot(t.pole.position, pivot, _rotQDelta);
+      }
+    }
+
+    // 3) 动作混合起点（世界坐标快照）同步旋转，防混合窗口内回摆
+    const st = this.actionRuntime?.states?.get?.(entry.id);
+    const bf = st?.blendFrom;
+    if (bf) {
+      for (const c of Object.values(bf.chains || {})) {
+        if (c?.target) _rotPointAboutPivot(c.target, pivot, _rotQDelta);
+        if (c?.pole) _rotPointAboutPivot(c.pole, pivot, _rotQDelta);
+      }
+      if (bf.pelvis) bf.pelvis.applyQuaternion(_rotQDelta); // 世界偏移向量（非点）
+      if (bf.pelvisWorldQuat) bf.pelvisWorldQuat.premultiply(_rotQDelta);
+    }
+
+    // 4) 脚钉地基准重置（根骨世界位置已随模型旋转变化）
+    entry._rootPrev = null;
+    entry._ikDirty = true; // 非活动角色也补解一次，保证姿态立即正确
+    return true;
+  }
+
+  /**
+   * 读取角色当前旋转（欧拉角，度，YXZ 顺序）
+   * @param {string} id
+   * @returns {{x:number,y:number,z:number}|null}
+   */
+  getCharacterRotation(id) {
+    const entry = this.characters.get(id);
+    if (!entry || !entry.model) return null;
+    _rotEuler.setFromQuaternion(entry.model.quaternion, "YXZ");
+    return {
+      x: +THREE.MathUtils.radToDeg(_rotEuler.x).toFixed(2),
+      y: +THREE.MathUtils.radToDeg(_rotEuler.y).toFixed(2),
+      z: +THREE.MathUtils.radToDeg(_rotEuler.z).toFixed(2),
+    };
   }
 
   setActive(id) {
