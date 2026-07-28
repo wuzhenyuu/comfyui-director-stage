@@ -37,6 +37,7 @@ import {
   sampleCurvePoint,
   sampleByArcFraction,
 } from "./trajectory.js";
+import { isClipActionId } from "./action-presets.js";
 
 // ---------------- 基础数学 ----------------
 
@@ -332,6 +333,14 @@ export function createRouteRuntime(deps = {}) {
       const walkId = (typeof findWalkAction === "function" ? findWalkAction(entry) : null) || "walk";
       const st = actionRuntime.getState?.(entry.id);
       if (st?.playing && st.id === walkId) return; // 已在走
+      // P4-fix（2026-07-29）：骨骼模式冻结 IK 求解，程序化 walk 驱动 IK targets
+      // 不生效（滑步/骨盆泄漏）——与动作预设同一规则：自动切回 IK 模式再播。
+      // 模型自带 walk clip 由 AnimationMixer 直驱骨骼，骨骼模式下正常，不拦截。
+      const be = window.__ds?.boneEditor;
+      if (be?.isBoneMode?.() && !(typeof isClipActionId === "function" && isClipActionId(walkId))) {
+        be.setMode("ik");
+        window.__ds?.showToast?.("🎯 行走动作基于 IK 驱动，已自动切回 IK 模式", false);
+      }
       actionRuntime.play?.(entry.id, walkId);
     } catch { /* 动作启动失败不阻塞行走 */ }
   }
@@ -381,6 +390,13 @@ export function createRouteRuntime(deps = {}) {
     play(id) {
       const entry = manager?.get?.(id);
       if (!entry?.route) return false;
+      // P4-fix（2026-07-29）：骨骼模式下路线推进被 renderLoop 门控冻结，
+      // 主动播放先切回 IK 模式（与动作预设同一规则），否则按钮显示播放中但角色不动。
+      const be = window.__ds?.boneEditor;
+      if (be?.isBoneMode?.()) {
+        be.setMode("ik");
+        window.__ds?.showToast?.("🎯 播放行走路线需要 IK 模式，已自动切换", false);
+      }
       const st = _state(id, true);
       const prepared = _prepared(entry, st);
       if (!prepared) return false;

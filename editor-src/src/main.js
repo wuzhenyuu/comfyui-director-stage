@@ -2863,7 +2863,12 @@ function renderLoop(ts) {
 
     // V2-F3：人物行走路线（cameraOperator 之后、actionRuntime 之前；
     // 驱动模型位置/朝向 + 自动 walk；follow 模式跟随相机轨迹 progress）
-    routeRuntime.tick(dt, { playing: trajectoryRuntime.playing, progress: trajectoryRuntime.progress });
+    // P4-fix（2026-07-29）：骨骼模式下冻结路线推进——否则 walk 动作被 setMode 暂停
+    // 而路线继续平移模型，出现「冻结姿势滑行」；退出骨骼模式后 tick 恢复续走。
+    // （骨骼模式下主动播放路线由 char-route._startWalk 自动切回 IK 模式，与此互补）
+    if (!boneEditor.isBoneMode()) {
+      routeRuntime.tick(dt, { playing: trajectoryRuntime.playing, progress: trajectoryRuntime.progress });
+    }
 
     // V2-F4：点 gizmo 每帧同步（相机跟随 / 导出隐藏兜底）
     trajectoryUI?.gizmo?.tick?.();

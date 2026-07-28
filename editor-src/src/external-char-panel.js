@@ -10,7 +10,7 @@
  * 可见性/重命名时触发）。
  */
 import { MAX_EXTERNAL_CHARACTERS } from "./external-characters.js";
-import { ACTIONS, getClipActions } from "./action-presets.js";
+import { ACTIONS, getClipActions, isClipActionId } from "./action-presets.js";
 import { createPosePresetSection } from "./pose-presets.js";
 
 const ROW_BTN_STYLE =
@@ -32,7 +32,7 @@ export function createExternalCharPanel(container, manager, opts = {}) {
   panel.id = "external-char-panel";
   panel.style.cssText =
     "width:100%;background:#14171f;border-bottom:1px solid #2a2f3d;display:flex;" +
-    "flex-direction:column;user-select:none;max-height:32%;";
+    "flex-direction:column;user-select:none;"; // P4-fix（2026-07-29）：去掉 max-height:32%——否则 list 被动作栏/姿态预设挤成一条缝，删除/重命名按钮点不到
 
   // ── 标题行：分区名 + 数量上限徽标 ──
   const header = document.createElement("div");
@@ -95,7 +95,7 @@ export function createExternalCharPanel(container, manager, opts = {}) {
   // ── 列表区 ──
   const list = document.createElement("div");
   list.id = "ext-char-list";
-  list.style.cssText = "flex:1;overflow-y:auto;padding:2px 0;";
+  list.style.cssText = "flex:none;overflow-y:auto;padding:2px 0;min-height:58px;max-height:172px;"; // P4-fix：列表自身限高+内部滚动（约2~5行可见）
   panel.appendChild(list);
 
   // ── P3-0：动作栏（作用于活动角色）──
@@ -204,8 +204,7 @@ export function createExternalCharPanel(container, manager, opts = {}) {
   actionBar.appendChild(actionRow2);
 
   // 快捷动作按钮行：每个动作一个 data-action-id，既可读也可直接点击播放
-  const quickRow = document.createElement("div");
-  quickRow.style.cssText = "display:flex;flex-wrap:wrap;gap:3px;";
+  const quickRow = document.createElement("div");  quickRow.style.cssText = "display:flex;flex-wrap:wrap;gap:3px;";
   for (const a of ACTIONS) {
     const b = document.createElement("button");
     b.type = "button";
@@ -222,6 +221,7 @@ export function createExternalCharPanel(container, manager, opts = {}) {
         return;
       }
       actionSelect.value = a.id;
+      _leaveBoneModeForProceduralAction(a.id);
       actionRuntime.toggle(entry.id, a.id);
     });
     quickRow.appendChild(b);
@@ -239,12 +239,25 @@ export function createExternalCharPanel(container, manager, opts = {}) {
     return manager.getActive?.() || null;
   }
 
+  // P4-fix（2026-07-29）：程序化动作预设驱动 IK targets + 骨盆，而骨骼模式冻结 IK 求解，
+  // 会导致「骨盆被拉走、四肢保持原姿势」的撕裂怪姿势（用户反馈：骨骼模式下预设姿势全错）。
+  // 规则：骨骼模式下触发程序化动作 → 自动切回 IK 模式再播放（setMode 内部已 syncIKFromBones，
+  // 当前骨骼姿势无损带到 IK）；模型动画（clip:）由 AnimationMixer 直接驱动骨骼，不受影响。
+  function _leaveBoneModeForProceduralAction(actionId) {
+    const be = window.__ds?.boneEditor;
+    if (!be?.isBoneMode?.()) return;
+    if (typeof isClipActionId === "function" && isClipActionId(actionId)) return;
+    be.setMode("ik");
+    window.__ds?.showToast?.("🎯 动作预设基于 IK 驱动，已自动切回 IK 模式", false);
+  }
+
   playBtn.addEventListener("click", () => {
     const entry = activeEntry();
     if (!entry || !actionRuntime) {
       window.__ds?.showToast?.("请先在列表中激活一个 3D角色", true);
       return;
     }
+    _leaveBoneModeForProceduralAction(actionSelect.value);
     actionRuntime.toggle(entry.id, actionSelect.value);
   });
   standBtn.addEventListener("click", () => {
