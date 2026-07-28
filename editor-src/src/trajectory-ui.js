@@ -13,6 +13,7 @@
  * 本文件自包含构建 DOM，不改动 index.html。
  */
 import * as THREE from "three";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { prepareTrajectory, evaluatePreparedTrajectory } from "./trajectory.js";
 
 /* ==================== 数据工具 ==================== */
@@ -239,6 +240,266 @@ export function createTrajectoryRuntime({ cameraManager, orbit, externalManager,
   return runtime;
 }
 
+/* ==================== F4 点 gizmo 运行时（轨迹点/路线点共用） ==================== */
+
+/**
+ * 通用 3D 点 gizmo：曲线常亮 + 编号点标记（raycast 选中）+ TransformControls 拖动。
+ * 多 source 共存（如 "traj" 相机轨迹 / "route" 角色路线），单选中、单 TransformControls。
+ *
+ * source adapter 契约：
+ *   getPoints() → [{ index, kind:"pos"|"target", position:[x,y,z] }]
+ *   getLinePoints() → [[x,y,z], ...] 折线采样（≥2 才画线）
+ *   onDragStart(sel) → token（快照，onDragEnd 回传）
+ *   onDragMove(sel, [x,y,z]) — 实时写数据（不广播，避免面板抖动）
+ *   onDragEnd(sel, token) — 广播/undo/面板刷新
+ *
+ * 可见性：任一 source 注册 && 非导出中；导出经 beginExport/endExport + isExporting 轮询双保险。
+ */
+export function createPointGizmoRuntime({ scene, dom, pickSurface, getCamera, orbit, isExporting }) {
+  const group = new THREE.Group();
+  group.name = "DS_PointGizmo";
+  scene.add(group);
+
+  const proxy = new THREE.Object3D();
+  proxy.name = "DS_PointGizmoProxy";
+  scene.add(proxy);
+
+  const tctrl = new TransformControls(getCamera?.(), dom);
+  tctrl.setMode("translate");
+  tctrl.setSize(0.7);
+  tctrl.enabled = false;
+  const helper = typeof tctrl.getHelper === "function" ? tctrl.getHelper() : tctrl;
+  helper.name = "DS_PointGizmoTctrl";
+  helper.visible = false;
+  scene.add(helper);
+
+  // 共享几何/材质（refresh 重建 marker 不 dispose）
+  const markerGeo = new THREE.SphereGeometry(1, 14, 10);
+  const matTraj = new THREE.MeshBasicMaterial({ color: 0xe8962f });
+  const matTarget = new THREE.MeshBasicMaterial({ color: 0x44ccff });
+  const matRoute = new THREE.MeshBasicMaterial({ color: 0x2f9e63 });
+  const matSelected = new THREE.MeshBasicMaterial({ color: 0xff5544 });
+  const lineMatTraj = new THREE.LineBasicMaterial({ color: 0xe8962f, transparent: true, opacity: 0.9 });
+  const lineMatRoute = new THREE.LineBasicMaterial({ color: 0x2f9e63, transparent: true, opacity: 0.9 });
+
+  const sources = new Map(); // key -> adapter
+  let selection = null;      // { source, index, kind }
+  let dragging = false;
+  let _dragToken = null;
+  let _exportDepth = 0;
+
+  function makeNumberSprite(num, colorCss) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 64;
+    const ctx = cv.getContext("2d");
+    ctx.beginPath();
+    ctx.arc(32, 32, 26, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,12,18,0.85)";
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = colorCss;
+    ctx.stroke();
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 30px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(num), 32, 34);
+    const tex = new THREE.CanvasTexture(cv);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+    const spr = new THREE.Sprite(mat);
+    spr.scale.set(0.16, 0.16, 1);
+    return spr;
+  }
+
+  function anySource() {
+    for (const s of sources.values()) if (s) return true;
+    return false;
+  }
+
+  function updateVis() {
+    const vis = anySource() && _exportDepth === 0 && !(isExporting?.() === true);
+    group.visible = vis;
+    const selValid = !!(vis && selection && sources.get(selection.source));
+    helper.visible = selValid;
+    tctrl.enabled = selValid;
+    if (selValid) {
+      if (tctrl.object !== proxy) tctrl.attach(proxy);
+    } else if (tctrl.object) {
+      tctrl.detach();
+    }
+  }
+
+  function disposeChildren(onlyLines = false) {
+    for (const c of [...group.children]) {
+      if (onlyLines && !c.isLine) continue;
+      group.remove(c);
+      if (c.isSprite) {
+        c.material.map?.dispose?.();
+        c.material.dispose?.();
+      } else if (c.isLine) {
+        c.geometry.dispose?.();
+      }
+      // 球 marker 共享 geo/mat，不 dispose
+    }
+  }
+
+  function buildLines() {
+    for (const [key, adapter] of sources) {
+      if (!adapter) continue;
+      const linePts = adapter.getLinePoints?.() || [];
+      if (linePts.length < 2) continue;
+      const geo = new THREE.BufferGeometry().setFromPoints(
+        linePts.map((p) => new THREE.Vector3(p[0], p[1], p[2]))
+      );
+      group.add(new THREE.Line(geo, key === "route" ? lineMatRoute : lineMatTraj));
+    }
+  }
+
+  function syncProxy() {
+    if (!selection) return;
+    const adapter = sources.get(selection.source);
+    const pts = adapter?.getPoints?.() || [];
+    const p = pts.find((q) => q.index === selection.index && q.kind === selection.kind);
+    if (!p) { selection = null; return; }
+    proxy.position.set(p.position[0], p.position[1], p.position[2]);
+  }
+
+  /** 全量重建（线 + marker + sprite） */
+  function refresh() {
+    disposeChildren();
+    buildLines();
+    for (const [key, adapter] of sources) {
+      if (!adapter) continue;
+      const pts = adapter.getPoints?.() || [];
+      for (const p of pts) {
+        const isSel = selection && selection.source === key &&
+          selection.index === p.index && selection.kind === p.kind;
+        const mat = isSel ? matSelected : (key === "route" ? matRoute : (p.kind === "target" ? matTarget : matTraj));
+        const m = new THREE.Mesh(markerGeo, mat);
+        m.position.set(p.position[0], p.position[1], p.position[2]);
+        m.scale.setScalar(isSel ? 0.075 : 0.06);
+        m.userData.dsPoint = { source: key, index: p.index, kind: p.kind };
+        group.add(m);
+        if (p.kind !== "target") {
+          const spr = makeNumberSprite(p.index + 1, key === "route" ? "#2f9e63" : "#e8962f");
+          spr.position.set(p.position[0], p.position[1] + 0.13, p.position[2]);
+          spr.userData.dsPoint = { source: key, index: p.index, kind: p.kind };
+          group.add(spr);
+        }
+      }
+    }
+    syncProxy();
+    updateVis();
+  }
+
+  /** 拖拽中轻量刷新：只重建曲线，选中 marker 跟随 proxy */
+  function refreshDuringDrag() {
+    disposeChildren(true);
+    buildLines();
+    for (const c of group.children) {
+      const d = c.userData?.dsPoint;
+      if (d && selection && d.source === selection.source &&
+        d.index === selection.index && d.kind === selection.kind) {
+        c.position.set(
+          proxy.position.x,
+          proxy.position.y + (c.isSprite ? 0.13 : 0),
+          proxy.position.z
+        );
+      }
+    }
+  }
+
+  tctrl.addEventListener("dragging-changed", (e) => {
+    dragging = !!e.value;
+    if (orbit) orbit.enabled = !e.value;
+    if (dragging) {
+      const adapter = selection ? sources.get(selection.source) : null;
+      try { _dragToken = adapter?.onDragStart?.(selection) ?? null; } catch { _dragToken = null; }
+    } else {
+      const adapter = selection ? sources.get(selection.source) : null;
+      try { adapter?.onDragEnd?.(selection, _dragToken); } catch { /* 容错 */ }
+      _dragToken = null;
+      refresh();
+    }
+  });
+  tctrl.addEventListener("objectChange", () => {
+    if (!selection || !dragging) return;
+    const adapter = sources.get(selection.source);
+    if (!adapter) return;
+    try {
+      adapter.onDragMove?.(selection, [proxy.position.x, proxy.position.y, proxy.position.z]);
+    } catch { /* 容错 */ }
+    refreshDuringDrag();
+  });
+
+  /* ---------- 点击选中（capture 阶段优先于场景其他拾取） ---------- */
+  const _ray = new THREE.Raycaster();
+  const _ndc = new THREE.Vector2();
+  /** 射线拾取点标记（测试钩子同路径）；命中返回 { source, index, kind } 或 null */
+  function pick(clientX, clientY) {
+    if (!group.visible) return null;
+    const cam = getCamera?.();
+    if (!cam || !dom) return null;
+    const r = dom.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    _ndc.set(
+      ((clientX - r.left) / r.width) * 2 - 1,
+      -((clientY - r.top) / r.height) * 2 + 1
+    );
+    _ray.setFromCamera(_ndc, cam);
+    const hits = _ray.intersectObjects(group.children, false);
+    const hit = hits.find((h) => h.object.userData?.dsPoint);
+    return hit ? { ...hit.object.userData.dsPoint } : null;
+  }
+  function onPointerDown(e) {
+    if (e.button !== 0) return;
+    if (tctrl.axis) return; // 悬停在 gizmo 手柄上：交给 TransformControls
+    const d = pick(e.clientX, e.clientY);
+    if (d) {
+      e.stopPropagation();
+      api.select(d.source, d.index, d.kind);
+    } else if (selection) {
+      api.clearSelection();
+    }
+  }
+  (pickSurface || dom)?.addEventListener?.("pointerdown", onPointerDown, true);
+
+  const api = {
+    setSource(key, adapter) {
+      if (adapter) sources.set(key, adapter);
+      else sources.delete(key);
+      if (selection && !sources.get(selection.source)) selection = null;
+      updateVis();
+    },
+    select(source, index, kind) {
+      selection = { source, index, kind };
+      try { sources.get(source)?.onSelect?.(selection); } catch { /* 容错 */ }
+      refresh();
+    },
+    clearSelection() {
+      if (!selection) return;
+      selection = null;
+      refresh();
+    },
+    refresh,
+    /** renderLoop 每帧：相机跟随 + 导出可见性兜底 */
+    tick() {
+      const cam = getCamera?.();
+      if (cam && tctrl.camera !== cam) tctrl.camera = cam;
+      updateVis();
+    },
+    beginExport() { _exportDepth++; updateVis(); },
+    endExport() { _exportDepth = Math.max(0, _exportDepth - 1); updateVis(); },
+    isDragging: () => dragging,
+    get selection() { return selection ? { ...selection } : null; },
+    _pick: pick,
+    _group: group,
+    _tctrl: tctrl,
+    _proxy: proxy,
+  };
+  return api;
+}
+
 /* ==================== 轨迹编辑独立 undo 栈（DESIGN §6） ==================== */
 
 function createTrajUndoStack() {
@@ -282,9 +543,77 @@ function createTrajUndoStack() {
  * 构建时间轴 + 轨迹编辑面板（自包含 DOM）。
  * @returns {{ undo(), redo(), getUndoDepth(), refreshPanel(), toggleBar(), bar }}
  */
-export function createTrajectoryUI({ runtime, cameraManager, propManager, externalManager, orbit, showToast }) {
+export function createTrajectoryUI({ runtime, cameraManager, propManager, externalManager, orbit, showToast,
+  scene, dom, pickSurface, getCamera, isExporting, routeRuntime }) {
   const toast = (msg, isErr) => { try { showToast?.(msg, isErr); } catch { console.log(msg); } };
   const undoStack = createTrajUndoStack();
+
+  /* ---------- V2-F4：3D 点 gizmo（轨迹线常亮 + 编号点标记 + 拖动） ---------- */
+  const gizmo = (scene && dom)
+    ? createPointGizmoRuntime({
+        scene, dom, pickSurface,
+        getCamera: getCamera || (() => cameraManager.getActiveCamera()?.camera),
+        orbit, isExporting,
+      })
+    : null;
+
+  /** 相机轨迹 gizmo 适配器（position 主点 + target 独立小标记） */
+  const trajAdapter = {
+    getPoints() {
+      const entry = cameraManager.getActiveCamera();
+      const traj = entry?.trajectory;
+      if (!traj || !Array.isArray(traj.points)) return [];
+      const out = [];
+      traj.points.forEach((p, i) => {
+        if (Array.isArray(p.position)) out.push({ index: i, kind: "pos", position: p.position });
+        if (Array.isArray(p.target)) out.push({ index: i, kind: "target", position: p.target });
+      });
+      return out;
+    },
+    getLinePoints() {
+      const entry = cameraManager.getActiveCamera();
+      const traj = entry?.trajectory;
+      if (!traj || !Array.isArray(traj.points) || traj.points.length < 2) return [];
+      const prepared = runtime._prepared(traj);
+      if (!prepared) return traj.points.filter((p) => Array.isArray(p.position)).map((p) => p.position);
+      const N = 160;
+      const pts = [];
+      for (let k = 0; k <= N; k++) {
+        const pose = evaluatePreparedTrajectory(prepared, k / N);
+        pts.push(pose.position);
+      }
+      return pts;
+    },
+    onDragStart() {
+      return cloneTraj(cameraManager.getActiveCamera()?.trajectory);
+    },
+    onDragMove(sel, pos) {
+      const traj = cameraManager.getActiveCamera()?.trajectory;
+      const p = traj?.points?.[sel.index];
+      if (!p) return;
+      if (sel.kind === "target") p.target = [pos[0], pos[1], pos[2]];
+      else p.position = [pos[0], pos[1], pos[2]];
+      // prepared 缓存失效（不广播：拖动中避免面板/刻度重刷抖动，结束时 onDragEnd 统一广播）
+      traj._rev = (traj._rev || 0) + 1;
+    },
+    onDragEnd(sel, before) {
+      const entry = cameraManager.getActiveCamera();
+      if (!entry?.trajectory || !before) return;
+      touchTraj(entry.trajectory); // 广播 → 刻度/面板/gizmo 联动刷新
+      undoStack.push(entry, before, entry.trajectory, sel.kind === "target" ? "拖动目标点" : "拖动轨迹点");
+      if (barVisible) { refreshPanel(); refreshTransport(); }
+    },
+  };
+
+  /** 轨迹 gizmo 显隐：时间轴打开 && 活动机位有轨迹点；切机位/关时间轴 → 隐藏 */
+  function syncTrajGizmo() {
+    if (!gizmo) return;
+    const entry = cameraManager.getActiveCamera();
+    const show = barVisible && entry?.trajectory &&
+      Array.isArray(entry.trajectory.points) && entry.trajectory.points.length > 0;
+    gizmo.setSource("traj", show ? trajAdapter : null);
+    gizmo.refresh();
+  }
 
   /* ---------- 顶栏按钮 ---------- */
   const tlBtn = document.createElement("button");
@@ -340,7 +669,14 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
   slider.value = "0";
   slider.style.cssText = "width:100%;accent-color:#2f9e63;";
   slider.addEventListener("input", () => {
-    runtime.seekTo(parseInt(slider.value, 10) / 1000);
+    const t = parseInt(slider.value, 10) / 1000;
+    // V2-F3：路线播放中（且相机轨迹未播放）→ 滑条驱动路线进度
+    const acChar = externalManager?.getActive?.();
+    if (routeRuntime && acChar?.route && routeRuntime.isPlaying(acChar.id) && !runtime.playing) {
+      routeRuntime.seekTo(acChar.id, t);
+    } else {
+      runtime.seekTo(t);
+    }
     refreshTransport();
   });
   sliderWrap.appendChild(slider);
@@ -387,6 +723,7 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
       refreshTransport();
       refreshPanel();
     }
+    syncTrajGizmo(); // V2-F4：关时间轴 → 隐藏轨迹 gizmo；开 → 常亮
     // 底部栏改变布局高度 → 触发视口信箱重排
     try { window.dispatchEvent(new Event("resize")); } catch { /* 忽略 */ }
     if (window.__ds_layoutCanvas) { try { window.__ds_layoutCanvas(); } catch { /* 忽略 */ } }
@@ -395,8 +732,12 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
   /* ---------- 传输控件刷新 ---------- */
   function refreshTransport() {
     playBtn.textContent = runtime.playing ? "⏸️" : "▶️";
+    // V2-F3：路线播放中（且相机轨迹未播放）→ 滑条跟随路线进度
+    const acChar = externalManager?.getActive?.();
+    const routePlaying = !!(routeRuntime && acChar?.route && routeRuntime.isPlaying(acChar.id));
     if (document.activeElement !== slider) {
-      slider.value = String(Math.round(runtime.progress * 1000));
+      const v = routePlaying && !runtime.playing ? routeRuntime.getProgress(acChar.id) : runtime.progress;
+      slider.value = String(Math.round(v * 1000));
     }
     const ac = cameraManager.getActiveCamera();
     const dur = ac?.trajectory && Number.isFinite(ac.trajectory.duration) ? ac.trajectory.duration : 0;
@@ -409,22 +750,44 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
     ticksRow.innerHTML = "";
     const ac = cameraManager.getActiveCamera();
     const traj = ac?.trajectory;
-    if (!traj || !Array.isArray(traj.points)) return;
-    for (const p of traj.points) {
-      if (!Number.isFinite(p?.time)) continue;
-      const dot = document.createElement("div");
-      dot.title = `轨迹点 ${p.id || ""} @ t=${p.time.toFixed(2)}（点击跳转）`;
-      dot.style.cssText = [
-        "position:absolute", `left:${(Math.max(0, Math.min(1, p.time)) * 100).toFixed(2)}%`,
-        "top:3px", "width:8px", "height:8px", "margin-left:-4px",
-        "border-radius:50%", "background:#e8962f", "cursor:pointer",
-        "border:1px solid #0b0d12",
-      ].join(";");
-      dot.addEventListener("click", () => {
-        runtime.seekTo(Math.max(0, Math.min(1, p.time)));
-        refreshTransport();
-      });
-      ticksRow.appendChild(dot);
+    if (traj && Array.isArray(traj.points)) {
+      for (const p of traj.points) {
+        if (!Number.isFinite(p?.time)) continue;
+        const dot = document.createElement("div");
+        dot.title = `轨迹点 ${p.id || ""} @ t=${p.time.toFixed(2)}（点击跳转）`;
+        dot.style.cssText = [
+          "position:absolute", `left:${(Math.max(0, Math.min(1, p.time)) * 100).toFixed(2)}%`,
+          "top:3px", "width:8px", "height:8px", "margin-left:-4px",
+          "border-radius:50%", "background:#e8962f", "cursor:pointer",
+          "border:1px solid #0b0d12",
+        ].join(";");
+        dot.addEventListener("click", () => {
+          runtime.seekTo(Math.max(0, Math.min(1, p.time)));
+          refreshTransport();
+        });
+        ticksRow.appendChild(dot);
+      }
+    }
+    // V2-F3：活动角色路线点刻度（绿色，点击 seek 路线）
+    const acChar = externalManager?.getActive?.();
+    const route = acChar?.route;
+    if (route && Array.isArray(route.points)) {
+      for (const p of route.points) {
+        if (!Number.isFinite(p?.time)) continue;
+        const dot = document.createElement("div");
+        dot.title = `路线点 ${p.id || ""} @ t=${p.time.toFixed(2)}（点击跳转）`;
+        dot.style.cssText = [
+          "position:absolute", `left:${(Math.max(0, Math.min(1, p.time)) * 100).toFixed(2)}%`,
+          "top:3px", "width:8px", "height:8px", "margin-left:-4px",
+          "border-radius:50%", "background:#2f9e63", "cursor:pointer",
+          "border:1px solid #0b0d12",
+        ].join(";");
+        dot.addEventListener("click", () => {
+          routeRuntime?.seekTo(acChar.id, Math.max(0, Math.min(1, p.time)));
+          refreshTransport();
+        });
+        ticksRow.appendChild(dot);
+      }
     }
   }
 
@@ -479,6 +842,51 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
 
   function deletePoint(idx) {
     mutate("删除轨迹点", () => { activeEntry().trajectory.points.splice(idx, 1); });
+  }
+
+  /**
+   * V2-F4：插入轨迹点 —— 选中点与下一点的曲线中点插入（时间取均值，位置/target
+   * 取曲线求值，保证落在插值路径上）；未选中时取当前播放进度所在段。
+   */
+  function insertPoint() {
+    const entry = activeEntry();
+    const traj = entry?.trajectory;
+    if (!traj || !Array.isArray(traj.points) || traj.points.length < 2) {
+      toast("需 ≥2 个轨迹点才能插入", false);
+      return;
+    }
+    const pts = traj.points;
+    let seg = -1;
+    const sel = gizmo?.selection;
+    if (sel && sel.source === "traj" && sel.index >= 0 && sel.index < pts.length) {
+      seg = Math.min(sel.index, pts.length - 2);
+    } else {
+      const t = runtime.progress;
+      seg = pts.length - 2;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const t0 = Number.isFinite(pts[i].time) ? pts[i].time : 0;
+        const t1 = Number.isFinite(pts[i + 1].time) ? pts[i + 1].time : 1;
+        if (t >= t0 && t <= t1) { seg = i; break; }
+      }
+    }
+    mutate("插入轨迹点", () => {
+      const a = pts[seg];
+      const b = pts[seg + 1];
+      const tMid = ((Number.isFinite(a.time) ? a.time : 0) + (Number.isFinite(b.time) ? b.time : 1)) / 2;
+      // 曲线上求中点姿态（静态 target，不解算 track）
+      const prepared = runtime._prepared(traj);
+      const pose = prepared ? evaluatePreparedTrajectory(prepared, tMid) : null;
+      const midArr = (u, v) => [(u[0] + v[0]) / 2, (u[1] + v[1]) / 2, (u[2] + v[2]) / 2];
+      pts.splice(seg + 1, 0, {
+        id: nextPointId(),
+        position: pose ? pose.position : midArr(a.position, b.position),
+        target: pose ? pose.target : midArr(a.target, b.target),
+        fov: pose ? pose.fov : ((Number.isFinite(a.fov) ? a.fov : 50) + (Number.isFinite(b.fov) ? b.fov : 50)) / 2,
+        time: tMid,
+        track: null,
+      });
+    });
+    toast("⇢ 已在中点插入轨迹点", false);
   }
 
   function movePoint(idx, dir) {
@@ -564,6 +972,9 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
     const row1 = el("div", "display:flex;gap:4px;margin-bottom:8px;");
     const recBtn = el("button", btnCss + "flex:1;", "📍 记录当前机位为轨迹点");
     recBtn.addEventListener("click", recordPoint);
+    const insBtn = el("button", btnCss, "⇢ 插入点");
+    insBtn.title = "在选中点（或当前进度所在段）与下一点的曲线中点插入轨迹点";
+    insBtn.addEventListener("click", insertPoint);
     const undoBtn = el("button", btnCss, "↩️");
     undoBtn.title = "撤销轨迹编辑（独立栈）";
     undoBtn.disabled = undoStack.depth === 0;
@@ -573,6 +984,7 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
     redoBtn.disabled = undoStack.redoDepth === 0;
     redoBtn.addEventListener("click", () => { undoStack.redo(); refreshPanel(); refreshTransport(); });
     row1.appendChild(recBtn);
+    row1.appendChild(insBtn);
     row1.appendChild(undoBtn);
     row1.appendChild(redoBtn);
     panel.appendChild(row1);
@@ -699,13 +1111,16 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
   runtime.onUpdate = () => { if (barVisible) refreshTransport(); };
   window.addEventListener("ds-trajectory-activecam-changed", () => {
     if (barVisible) { refreshPanel(); refreshTransport(); }
+    syncTrajGizmo(); // V2-F4：切机位 → gizmo 跟随新机位轨迹（无轨迹 → 隐藏）
   });
   window.addEventListener("ds-trajectory-changed", () => {
     if (barVisible) { refreshPanel(); refreshTransport(); }
+    if (!gizmo?.isDragging?.()) syncTrajGizmo(); // 拖动中由 gizmo 自刷，避免重建打断
   });
   window.addEventListener("ds-project-loaded", () => {
     undoStack.clear(); // 工程切换后旧轨迹快照失效
     if (barVisible) { refreshPanel(); refreshTransport(); }
+    syncTrajGizmo();
   });
   window.addEventListener("ds-char-changed", () => { if (barVisible) refreshPanel(); });
 
@@ -713,12 +1128,15 @@ export function createTrajectoryUI({ runtime, cameraManager, propManager, extern
     toggleBar,
     refreshPanel,
     refreshTransport,
-    undo: () => { const ok = undoStack.undo(); if (barVisible) { refreshPanel(); refreshTransport(); } return ok; },
-    redo: () => { const ok = undoStack.redo(); if (barVisible) { refreshPanel(); refreshTransport(); } return ok; },
+    syncTrajGizmo,
+    /** V2-F4：点 gizmo 运行时（路线等其他 source 复用同一套机制） */
+    gizmo,
+    undo: () => { const ok = undoStack.undo(); if (barVisible) { refreshPanel(); refreshTransport(); } syncTrajGizmo(); return ok; },
+    redo: () => { const ok = undoStack.redo(); if (barVisible) { refreshPanel(); refreshTransport(); } syncTrajGizmo(); return ok; },
     getUndoDepth: () => undoStack.depth,
     getRedoDepth: () => undoStack.redoDepth,
     /** 测试钩子：直接调用编辑操作 */
-    _ops: { createTrajectoryForActive, recordPoint, deletePoint, movePoint, updatePoint, updateGlobals, mutate },
+    _ops: { createTrajectoryForActive, recordPoint, deletePoint, insertPoint, movePoint, updatePoint, updateGlobals, mutate },
     bar,
     panel,
   };

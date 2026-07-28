@@ -35,6 +35,12 @@ import { mountControlsGlobals } from "./controls.js";
 import { mountThumbnailCapture } from "./thumbnail-capture.js";
 import { createBoneEditor } from "./bone-editor.js";
 import { createTrajectoryRuntime, createTrajectoryUI } from "./trajectory-ui.js";
+import { createCameraOperator } from "./camera-operator.js";
+import {
+  createRouteRuntime, createDefaultRoute, sanitizeRoute, touchRoute,
+  prepareRoute, evaluatePreparedRoute, nextRoutePointId,
+} from "./char-route.js";
+import { getClipActions } from "./action-presets.js";
 import { serialize as serializePosePresets, restore as restorePosePresets } from "./pose-presets.js";
 import * as panorama from "./panorama.js";
 import * as openposeImport from "./openpose-import.js";
@@ -186,6 +192,21 @@ const trajectoryRuntime = createTrajectoryRuntime({
   cameraManager, orbit, externalManager, propManager,
 });
 let trajectoryUI = null; // injectTopbarControls 之后挂载
+let cameraOperator = null; // V2-F1：trajectoryUI 之后挂载（掌镜打点走轨迹 _ops）
+
+// V2-F3：人物行走路线运行时（renderLoop 插入点：cameraOperator 之后、actionRuntime 之前）
+// 与 trajectoryRuntime 共享归一化 progress 语义；follow=true 时跟随相机轨迹进度。
+const routeRuntime = createRouteRuntime({
+  manager: externalManager,
+  actionRuntime,
+  translate: translateExternalCharacter, // 模型 + IK target/pole 同步 + 脚钉地基准重置
+  findWalkAction: (entry) => {
+    // 行走自动播 walk：优先模型自带 walk clip，回退程序化 "walk" 动作
+    const walkClip = getClipActions(entry).find((c) => /walk/i.test(c.clipName || c.name || ""));
+    return walkClip ? walkClip.id : "walk";
+  },
+  maxTurnRate: 6, // rad/s（≈344°/s 转身速率上限）
+});
 
 setupPointerEvents(viewportCanvas, joints);
 setupKeyboardShortcuts(joints, () => {
@@ -1184,10 +1205,342 @@ trajectoryUI = createTrajectoryUI({
   runtime: trajectoryRuntime,
   cameraManager, propManager, externalManager, orbit,
   showToast,
+  // V2-F4：点 gizmo 依赖（scene/dom/拾取面/导出检测）
+  scene, dom: viewportCanvas, pickSurface: viewportEl,
+  isExporting: () => skeletonHelpers._exportSaved != null,
+  // V2-F3：路线运行时（滑条/刻度联动）
+  routeRuntime,
 });
+
+// V2-F1：WASD 掌镜打点（Pointer Lock；自包含 DOM：顶栏「🎥 掌镜」+ 准星 HUD）
+cameraOperator = createCameraOperator({
+  scene, cameraManager, orbit, externalManager, propManager,
+  actionRuntime, trajectoryRuntime,
+  getTrajectoryUI: () => trajectoryUI,
+  dom: viewportCanvas, viewportEl,
+  showToast,
+});
+
+// V2-F2：MP4 参考视频导出（mp4-export.js 自包含：顶栏「🎬 导出视频」按钮/参数对话框/
+// __ds.exportTrajectoryMp4 钩子均在模块内构建；此处为唯一挂载点）
+import("./mp4-export.js").then((m) => m.createMp4ExportUI({
+  runtime: trajectoryRuntime, cameraManager, propManager, orbit, showToast,
+})).catch((e) => console.warn("[mp4-export] 模块加载失败：", e));
 
 // P3-2：骨骼编辑 UI（IK/骨骼模式切换 + Gizmo 模式 + 高级平移，挂载到顶栏右侧）
 boneEditor.mountUI();
+
+/* ========================= V2-F3：人物行走路线（gizmo 适配器 + 角色面板「路线」区） ========================= */
+
+/** 路线 gizmo 适配器（复用 F4 点 gizmo 机制：绿色线 + 编号点标记 + 拖动） */
+const routeAdapter = {
+  getPoints() {
+    const entry = externalManager.getActive?.();
+    const route = entry?.route;
+    if (!route || !Array.isArray(route.points)) return [];
+    return route.points
+      .map((p, i) => (Array.isArray(p?.position) ? { index: i, kind: "pos", position: p.position } : null))
+      .filter(Boolean);
+  },
+  getLinePoints() {
+    const entry = externalManager.getActive?.();
+    const route = entry?.route;
+    if (!route || !Array.isArray(route.points) || route.points.length < 2) return [];
+    const prepared = prepareRoute(route);
+    if (!prepared) {
+      return route.points.filter((p) => Array.isArray(p?.position)).map((p) => p.position);
+    }
+    const N = 160;
+    const pts = [];
+    for (let k = 0; k <= N; k++) pts.push(evaluatePreparedRoute(prepared, k / N).position);
+    return pts;
+  },
+  onDragStart() {
+    const entry = externalManager.getActive?.();
+    return entry?.route ? JSON.parse(JSON.stringify(entry.route)) : null;
+  },
+  onDragMove(sel, pos) {
+    const entry = externalManager.getActive?.();
+    const p = entry?.route?.points?.[sel.index];
+    if (!p) return;
+    p.position = [pos[0], pos[1], pos[2]];
+    entry.route._rev = (entry.route._rev || 0) + 1; // prepared 缓存失效（不广播）
+  },
+  onDragEnd() {
+    const entry = externalManager.getActive?.();
+    if (entry?.route) touchRoute(entry.route); // 广播 → 面板/gizmo/刻度刷新
+  },
+};
+
+/** 路线 gizmo 显隐：活动角色有路线点 → 常亮（与时间轴开关无关） */
+function syncRouteGizmo() {
+  const gizmo = trajectoryUI?.gizmo;
+  if (!gizmo) return;
+  const entry = externalManager.getActive?.();
+  const has = !!(entry?.route && Array.isArray(entry.route.points) && entry.route.points.length > 0);
+  gizmo.setSource("route", has ? routeAdapter : null);
+  gizmo.refresh();
+}
+
+/** 角色面板「路线」区（挂在 3D角色面板底部；IIFE 模式同 extRotationUI） */
+const routePanelUI = (() => {
+  const root = document.createElement("div");
+  root.id = "char-route-panel";
+  root.style.cssText =
+    "border-top:1px solid #2a2f3d;padding:8px 10px;display:flex;flex-direction:column;gap:6px;font-size:11px;";
+
+  const btnCss = "padding:3px 7px;font-size:11px;";
+  const inputCss = "width:48px;background:#232836;border:1px solid #2a2f3d;color:#e6e9f0;border-radius:4px;padding:2px 4px;font-size:11px;";
+  const selectCss = "background:#232836;border:1px solid #2a2f3d;color:#e6e9f0;border-radius:4px;padding:2px 4px;font-size:11px;";
+
+  function entry() { return externalManager.getActive?.() || null; }
+
+  function retime(route) {
+    const n = route.points.length;
+    route.points.forEach((p, i) => { p.time = n > 1 ? i / (n - 1) : 0; });
+  }
+
+  function mutate(fn) {
+    const e = entry();
+    if (!e) return;
+    fn(e);
+    if (e.route) touchRoute(e.route);
+    render();
+  }
+
+  const ops = {
+    createRoute() {
+      const e = entry();
+      if (!e || e.route) return;
+      e.route = createDefaultRoute();
+      touchRoute(e.route);
+      render();
+    },
+    /** 添加点：记录角色当前模型位置 */
+    addCurrentPoint() {
+      mutate((e) => {
+        if (!e.route) return;
+        e.route.points.push({
+          id: nextRoutePointId(),
+          position: e.model.position.toArray(),
+          time: 0,
+        });
+        retime(e.route);
+      });
+    },
+    /** 中点插入：点 idx 与下一点的曲线中点（末点则取前一段） */
+    insertAfter(idx) {
+      const e = entry();
+      const route = e?.route;
+      if (!route || route.points.length < 2) return;
+      const seg = Math.min(idx, route.points.length - 2);
+      mutate(() => {
+        const pts = route.points;
+        const prepared = prepareRoute(route);
+        const t0 = Number.isFinite(pts[seg].time) ? pts[seg].time : 0;
+        const t1 = Number.isFinite(pts[seg + 1].time) ? pts[seg + 1].time : 1;
+        const pose = prepared ? evaluatePreparedRoute(prepared, (t0 + t1) / 2) : null;
+        const a = pts[seg].position;
+        const b = pts[seg + 1].position;
+        pts.splice(seg + 1, 0, {
+          id: nextRoutePointId(),
+          position: pose ? pose.position : [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2],
+          time: 0,
+        });
+        retime(route);
+      });
+    },
+    deletePoint(idx) {
+      mutate((e) => { e.route?.points?.splice(idx, 1); if (e.route) retime(e.route); });
+    },
+    movePoint(idx, dir) {
+      mutate((e) => {
+        const pts = e.route?.points;
+        const j = idx + dir;
+        if (!pts || j < 0 || j >= pts.length) return;
+        [pts[idx], pts[j]] = [pts[j], pts[idx]];
+        retime(e.route);
+      });
+    },
+    setDuration(v) { mutate((e) => { if (e.route) e.route.duration = Math.max(0.5, Math.min(120, v)); }); },
+    setLoop(v) { mutate((e) => { if (e.route) e.route.loop = !!v; }); },
+    setCurve(v) { mutate((e) => { if (e.route) e.route.curve = v === "linear" ? "linear" : "smooth"; }); },
+    setFollow(v) {
+      const e = entry();
+      if (e) routeRuntime.setFollow(e.id, v);
+    },
+    play() {
+      const e = entry();
+      if (!e?.route) return;
+      if (routeRuntime.isPlaying(e.id)) routeRuntime.pause(e.id);
+      else if (!routeRuntime.play(e.id)) showToast("路线需 ≥2 个点才能播放", false);
+      refreshLight();
+    },
+    stop() {
+      const e = entry();
+      if (e) routeRuntime.stop(e.id);
+      refreshLight();
+    },
+  };
+
+  function el(tag, css, text) {
+    const e = document.createElement(tag);
+    if (css) e.style.cssText = css;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  /** 轻量刷新：播放按钮/状态文本（播放中每帧不重建 DOM） */
+  function refreshLight() {
+    const e = entry();
+    const playBtn = root.querySelector("#route-play-btn");
+    const status = root.querySelector("#route-status");
+    const playing = !!(e && routeRuntime.isPlaying(e.id));
+    if (playBtn) playBtn.textContent = playing ? "⏸" : "▶";
+    if (status && e?.route) {
+      status.textContent = playing
+        ? `行走中 ${(routeRuntime.getProgress(e.id) * 100).toFixed(0)}%`
+        : `${e.route.points.length} 点`;
+    }
+  }
+
+  function render() {
+    root.innerHTML = "";
+    const e = entry();
+    const head = el("div", "display:flex;align-items:center;gap:6px;font-weight:600;font-size:12px;color:#c8cddb;");
+    head.appendChild(el("span", "flex:1;", "🚶 行走路线"));
+    const status = el("span", "font-weight:400;color:#8a90a0;font-size:10px;", "");
+    status.id = "route-status";
+    head.appendChild(status);
+    root.appendChild(head);
+
+    if (!e) {
+      root.appendChild(el("div", "color:#5a6070;", "无活动 3D角色"));
+      return;
+    }
+    if (!e.route) {
+      const createBtn = el("button", btnCss + "width:100%;", "➕ 创建行走路线");
+      createBtn.addEventListener("click", ops.createRoute);
+      root.appendChild(createBtn);
+      return;
+    }
+
+    const route = e.route;
+
+    // 操作行：添加点 / 播放 / 停止
+    const row1 = el("div", "display:flex;gap:4px;");
+    const addBtn = el("button", btnCss + "flex:1;", "📍 添加点（当前位置）");
+    addBtn.title = "把角色当前模型位置记录为路线点";
+    addBtn.addEventListener("click", ops.addCurrentPoint);
+    const playBtn = el("button", btnCss, "▶");
+    playBtn.id = "route-play-btn";
+    playBtn.title = "播放/暂停行走";
+    playBtn.addEventListener("click", ops.play);
+    const stopBtn = el("button", btnCss, "⏹");
+    stopBtn.title = "停止行走（回 stand）";
+    stopBtn.addEventListener("click", ops.stop);
+    row1.appendChild(addBtn);
+    row1.appendChild(playBtn);
+    row1.appendChild(stopBtn);
+    root.appendChild(row1);
+
+    // 设置行：时长 / 曲线 / loop / 联动
+    const row2 = el("div", "display:flex;align-items:center;gap:5px;flex-wrap:wrap;color:#8a90a0;");
+    row2.appendChild(el("span", "", "时长"));
+    const durIn = document.createElement("input");
+    durIn.type = "number"; durIn.min = "0.5"; durIn.max = "120"; durIn.step = "0.5";
+    durIn.value = String(route.duration ?? 6);
+    durIn.style.cssText = inputCss;
+    durIn.addEventListener("change", () => ops.setDuration(parseFloat(durIn.value) || 6));
+    row2.appendChild(durIn);
+    row2.appendChild(el("span", "", "s"));
+
+    const curveSel = document.createElement("select");
+    curveSel.style.cssText = selectCss;
+    for (const [v, t] of [["smooth", "平滑"], ["linear", "线性"]]) {
+      const o = document.createElement("option"); o.value = v; o.textContent = t; curveSel.appendChild(o);
+    }
+    curveSel.value = route.curve === "linear" ? "linear" : "smooth";
+    curveSel.addEventListener("change", () => ops.setCurve(curveSel.value));
+    row2.appendChild(curveSel);
+
+    const loopLabel = el("label", "display:flex;align-items:center;gap:2px;cursor:pointer;");
+    const loopCb = document.createElement("input");
+    loopCb.type = "checkbox";
+    loopCb.checked = route.loop === true;
+    loopCb.style.cssText = "accent-color:#2f9e63;";
+    loopCb.addEventListener("change", () => ops.setLoop(loopCb.checked));
+    loopLabel.appendChild(loopCb);
+    loopLabel.appendChild(document.createTextNode("循环"));
+    row2.appendChild(loopLabel);
+
+    const followLabel = el("label", "display:flex;align-items:center;gap:2px;cursor:pointer;");
+    followLabel.title = "相机轨迹播放时，角色按同一进度行走";
+    const followCb = document.createElement("input");
+    followCb.type = "checkbox";
+    followCb.checked = routeRuntime.getFollow(e.id);
+    followCb.style.cssText = "accent-color:#2f9e63;";
+    followCb.addEventListener("change", () => ops.setFollow(followCb.checked));
+    followLabel.appendChild(followCb);
+    followLabel.appendChild(document.createTextNode("随相机轨迹"));
+    row2.appendChild(followLabel);
+    root.appendChild(row2);
+
+    // 点列表
+    route.points.forEach((p, idx) => {
+      const row = el("div", "display:flex;align-items:center;gap:4px;padding:2px 0;border-top:1px solid #232836;");
+      row.appendChild(el("span", "color:#2f9e63;min-width:20px;", `#${idx + 1}`));
+      const posTxt = el("span", "flex:1;color:#8a90a0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
+        Array.isArray(p.position) ? p.position.map((v) => v.toFixed(1)).join(", ") : "-");
+      row.appendChild(posTxt);
+      const insBtn = el("button", btnCss + "padding:1px 5px;", "⊕");
+      insBtn.title = "在此点与下一点的曲线中点插入";
+      insBtn.disabled = route.points.length < 2;
+      insBtn.addEventListener("click", () => ops.insertAfter(idx));
+      const upBtn = el("button", btnCss + "padding:1px 5px;", "↑");
+      upBtn.disabled = idx === 0;
+      upBtn.addEventListener("click", () => ops.movePoint(idx, -1));
+      const downBtn = el("button", btnCss + "padding:1px 5px;", "↓");
+      downBtn.disabled = idx === route.points.length - 1;
+      downBtn.addEventListener("click", () => ops.movePoint(idx, 1));
+      const delBtn = el("button", btnCss + "padding:1px 5px;", "✕");
+      delBtn.addEventListener("click", () => ops.deletePoint(idx));
+      row.appendChild(insBtn);
+      row.appendChild(upBtn);
+      row.appendChild(downBtn);
+      row.appendChild(delBtn);
+      root.appendChild(row);
+    });
+
+    if (route.points.length > 0) {
+      root.appendChild(el("div", "color:#5a6070;font-size:10px;", "拖动 3D 场景中的绿点调整路线；时间自动均分"));
+    }
+    refreshLight();
+  }
+
+  render();
+  return { el: root, render, refreshLight, _ops: ops };
+})();
+extCharUI.el.appendChild(routePanelUI.el);
+
+// 路线运行时 → UI 联动（时间轴滑条 + 面板状态，播放中每帧轻量刷新）
+routeRuntime.onUpdate = () => {
+  try { trajectoryUI?.refreshTransport?.(); } catch { /* 容错 */ }
+  try { routePanelUI?.refreshLight?.(); } catch { /* 容错 */ }
+};
+window.addEventListener("ds-external-char-changed", () => {
+  syncRouteGizmo();
+  routePanelUI.render();
+});
+window.addEventListener("ds-char-route-changed", () => {
+  if (!trajectoryUI?.gizmo?.isDragging?.()) syncRouteGizmo();
+  routePanelUI.render();
+});
+window.addEventListener("ds-project-loaded", () => {
+  syncRouteGizmo();
+  routePanelUI.render();
+});
+syncRouteGizmo();
 
 /* ========================= 构图叠加层 ========================= */
 
@@ -1368,6 +1721,7 @@ async function onApply() {
   btnCancel.disabled = true;
   setStatus("正在导出并上传…", statusEl);
   skeletonHelpers.beginExport(); // P3-0：骨骼线不混入 depth/normal/preview/mask 通道
+  trajectoryUI?.gizmo?.beginExport?.(); // V2-F4：轨迹线/点标记不混入导出通道
   try {
     const [ew, eh] = getExportWH();
     const sceneGz = encodeCurrentSceneGz();
@@ -1427,6 +1781,7 @@ async function onApply() {
     // P2-1：endExport 在 _exportSaved 为空时是 no-op，未 begin/非骨骼模式下调用安全
     boneEditor.endExport();
     skeletonHelpers.endExport();
+    trajectoryUI?.gizmo?.endExport?.();
     btnApply.disabled = false;
     btnCancel.disabled = false;
   }
@@ -1743,6 +2098,7 @@ const _dsRef = {
   performBatchExport: async (enabledPasses) => {
     skeletonHelpers.beginExport();
     boneEditor.beginExport(); // P2-5：测试钩子路径同样隐藏骨骼标记/Gizmo（成对 begin/end）
+    trajectoryUI?.gizmo?.beginExport?.(); // V2-F4：隐藏轨迹/路线 gizmo
     try {
       return await performBatchExport({
         cameraManager,
@@ -1758,6 +2114,7 @@ const _dsRef = {
     } finally {
       boneEditor.endExport();
       skeletonHelpers.endExport();
+      trajectoryUI?.gizmo?.endExport?.();
     }
   },
 
@@ -1773,6 +2130,8 @@ const _dsRef = {
 
   // 波次2-C：相机轨迹契约（播放/寻址供导出逐帧调用与测试探针）
   get trajectoryRuntime() { return trajectoryRuntime; },
+  // V2-F1：掌镜契约（enter/exit/recordPoint/toggleLock/isDegraded 供测试与脚本调用）
+  get cameraOperator() { return cameraOperator?.api || null; },
   playTrajectory: () => trajectoryRuntime.play(),
   pauseTrajectory: () => trajectoryRuntime.pause(),
   stopTrajectory: () => trajectoryRuntime.stop(),
@@ -1781,6 +2140,31 @@ const _dsRef = {
   trajectoryUndo: () => trajectoryUI?.undo?.() ?? false,
   trajectoryRedo: () => trajectoryUI?.redo?.() ?? false,
   getTrajectoryUndoDepth: () => trajectoryUI?.getUndoDepth?.() ?? 0,
+  // V2-F3：人物行走路线契约（setRoute/play/stop/isPlaying 供测试与脚本调用）
+  charRoute: {
+    setRoute: (charId, route) => {
+      const e = charId ? externalManager.get(charId) : externalManager.getActive();
+      if (!e) return false;
+      const clean = route ? sanitizeRoute(route) : null;
+      externalManager.setRoute(e.id, clean);
+      if (e.route) touchRoute(e.route); // bump _rev（sanitize 后缓存重建）
+      syncRouteGizmo();
+      routePanelUI?.render?.();
+      return true;
+    },
+    getRoute: (charId) => {
+      const e = charId ? externalManager.get(charId) : externalManager.getActive();
+      return e?.route || null;
+    },
+    play: (charId) => routeRuntime.play(charId || externalManager.activeCharacterId),
+    pause: (charId) => routeRuntime.pause(charId || externalManager.activeCharacterId),
+    stop: (charId) => routeRuntime.stop(charId || externalManager.activeCharacterId),
+    isPlaying: (charId) => routeRuntime.isPlaying(charId || externalManager.activeCharacterId),
+    seekTo: (charId, t) => routeRuntime.seekTo(charId || externalManager.activeCharacterId, t),
+    getProgress: (charId) => routeRuntime.getProgress(charId || externalManager.activeCharacterId),
+    setFollow: (charId, v) => routeRuntime.setFollow(charId || externalManager.activeCharacterId, v),
+    _runtime: routeRuntime,
+  },
   togglePanorama: () => panorama.toggle(),
   importOpenPose: async (file) => {
     const img = new Image();
@@ -2091,8 +2475,10 @@ function renderLoop(ts) {
 
     // 更新 OrbitControls 的相机（用于关节投影计算）
     // 波次2-C：轨迹播放中 trajectoryRuntime 拥有活动相机位姿，orbit/panorama 均不得写入
+    // V2-F1：掌镜中 cameraOperator 拥有活动相机位姿，同样跳过 orbit.update
     const trajPlaying = trajectoryRuntime.playing;
-    if (trajPlaying) {
+    const pilotActive = cameraOperator?.isActive?.() === true;
+    if (trajPlaying || pilotActive) {
       // 跳过 orbit.update / 全景锁定
     } else if (panorama.isEnabled()) {
       // 全景模式：相机锁原点，仅旋转（距离用极微小值保持球坐标正常运算）
@@ -2141,6 +2527,16 @@ function renderLoop(ts) {
 
     // 波次2-C：相机轨迹运行时（boneEditor 之后、actionRuntime 之前）
     trajectoryRuntime.tick(dt);
+
+    // V2-F1：掌镜驱动（trajectoryRuntime 之后；掌镜激活时移动活动相机 + 同步 orbit.target）
+    cameraOperator?.tick?.(dt);
+
+    // V2-F3：人物行走路线（cameraOperator 之后、actionRuntime 之前；
+    // 驱动模型位置/朝向 + 自动 walk；follow 模式跟随相机轨迹 progress）
+    routeRuntime.tick(dt, { playing: trajectoryRuntime.playing, progress: trajectoryRuntime.progress });
+
+    // V2-F4：点 gizmo 每帧同步（相机跟随 / 导出隐藏兜底）
+    trajectoryUI?.gizmo?.tick?.();
 
     // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
     actionRuntime.tick(dt);

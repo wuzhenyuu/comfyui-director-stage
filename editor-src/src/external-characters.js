@@ -558,7 +558,7 @@ export class ExternalCharacterManager {
           };
         }
       }
-      characters.push({
+      const charSnap = {
         id: entry.id,
         name: entry.name,
         type: entry.type,
@@ -575,7 +575,12 @@ export class ExternalCharacterManager {
         ikTargets,
         // P3-0：动作状态（id,time,playing,loop,speed,intensity）
         action: this.actionRuntime?.snapshotState?.(entry.id) || null,
-      });
+      };
+      // V2-F3：行走路线随 sceneJSON 持久化（旧工程无 route → 字段缺省，恢复兼容）
+      if (entry.route) {
+        try { charSnap.route = JSON.parse(JSON.stringify(entry.route)); } catch { /* 非法 route 静默跳过 */ }
+      }
+      characters.push(charSnap);
     }
     return { characters, activeCharacterId: this.activeCharacterId };
   }
@@ -624,6 +629,11 @@ export class ExternalCharacterManager {
         if (c.action && this.actionRuntime) {
           this.actionRuntime.restoreState(entry.id, c.action);
         }
+
+        // V2-F3：恢复行走路线（旧工程无 route 字段 → 跳过）
+        if (c.route && typeof c.route === "object") {
+          try { entry.route = JSON.parse(JSON.stringify(c.route)); } catch { /* 非法 route 静默跳过 */ }
+        }
       } catch (err) {
         console.warn(`[外部角色] 恢复失败（${c.name || c.id || c.url}）:`, err.message || err);
       }
@@ -637,6 +647,22 @@ export class ExternalCharacterManager {
     this._restorePending = false;
     this._emit();
     return this.characters.size > 0;
+  }
+
+  /**
+   * V2-F3：设置/清除角色行走路线（entry.route）。
+   * 数据模型见 char-route.js；此处仅挂引用并广播，清洗由调用方（sanitizeRoute）负责。
+   * @param {string} id
+   * @param {object|null} route — null 清除
+   * @returns {boolean}
+   */
+  setRoute(id, route) {
+    const entry = this.characters.get(id);
+    if (!entry) return false;
+    if (route) entry.route = route;
+    else delete entry.route;
+    window.dispatchEvent(new CustomEvent("ds-char-route-changed", { detail: { id } }));
+    return true;
   }
 
   _emit() {
