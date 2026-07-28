@@ -89,6 +89,10 @@ function disposeVrmRuntime(entry) {
 
 let _idCounter = 0;
 
+/** 整体缩放范围（等比，钳制） */
+export const CHARACTER_SCALE_MIN = 0.2;
+export const CHARACTER_SCALE_MAX = 3.0;
+
 /* ---------- 整体旋转：scratch 对象（函数同步执行、不可重入，安全复用） ---------- */
 const _rotEuler = new THREE.Euler();
 const _rotQNew = new THREE.Quaternion();
@@ -403,6 +407,80 @@ export class ExternalCharacterManager {
     entry._rootPrev = null;
     entry._ikDirty = true; // 非活动角色也补解一次，保证姿态立即正确
     return true;
+  }
+
+  /**
+   * 整体缩放外部角色（等比，绕模型自身原点 model.position）。
+   *
+   * 与 setCharacterRotation 同级契约：
+   *   1) IK target/pole 世界坐标绕 pivot 按比例同步缩放 —— 非播放状态下
+   *      骨骼随模型缩放、IK 球同步到达，求解零漂移；
+   *   2) 动作播放中：updateRigFrame 的 ds 路径每帧把 home/anchor 映射到当前帧
+   *      （P2 预埋的 scale 随动公式 v' = ds·dq·(v−capturePos) + pos_now），
+   *      target 由采样重写，天然跟随；
+   *   3) 混合中（blendFrom 世界坐标快照）同步缩放，避免混合窗口内回摆；
+   *   4) 脚钉地基准 _rootPrev 重置 —— 根骨世界位置随缩放已变化，不重置会把
+   *      脚钉地误判为根骨漂移；pivot 即模型原点（脚底地面基准），等比缩放后
+   *      脚底仍贴地；
+   *   5) 骨骼标记/SkeletonHelper/openpose 走骨骼世界矩阵，自动跟随。
+   *
+   * @param {string} id
+   * @param {number} s — 目标等比缩放（0.2~3.0 钳制）
+   * @returns {boolean} 是否成功
+   */
+  setCharacterScale(id, s) {
+    const entry = this.characters.get(id);
+    if (!entry || !entry.model) return false;
+    const m = entry.model;
+    let next = +s;
+    if (!Number.isFinite(next)) return false;
+    next = Math.min(CHARACTER_SCALE_MAX, Math.max(CHARACTER_SCALE_MIN, next));
+    const cur = m.scale.x || 1;
+    if (Math.abs(next - cur) < 1e-7) return true; // 无变化
+    const ds = next / cur;
+
+    const pivot = m.position; // 模型绕自身原点缩放（与 updateRigFrame 支点公式同源）
+    m.scale.setScalar(next);
+    m.updateMatrixWorld(true);
+
+    // 1) IK target/pole 同步缩放：v' = pivot + ds·(v − pivot)
+    if (entry.ikTargets) {
+      for (const t of Object.values(entry.ikTargets)) {
+        if (t?.target) t.target.position.sub(pivot).multiplyScalar(ds).add(pivot);
+        if (t?.pole) t.pole.position.sub(pivot).multiplyScalar(ds).add(pivot);
+      }
+    }
+
+    // 3) 动作混合起点（世界坐标快照）同步缩放，防混合窗口内回摆。
+    //    chains 是世界坐标【点】：绕 pivot 精确缩放。
+    //    bf.pelvis 是【映射帧偏移】（_applySample 中 mapRigPoint(base + off) 消费）：
+    //    相似映射复合 map'∘map⁻¹ = T，保持不动时混合起点恰好落在新缩放位置，
+    //    预先乘 ds 反而会双重缩放（推导见任务记录），故不动。
+    const st = this.actionRuntime?.states?.get?.(entry.id);
+    const bf = st?.blendFrom;
+    if (bf) {
+      for (const c of Object.values(bf.chains || {})) {
+        if (c?.target) c.target.sub(pivot).multiplyScalar(ds).add(pivot);
+        if (c?.pole) c.pole.sub(pivot).multiplyScalar(ds).add(pivot);
+      }
+      // pelvisWorldQuat / pelvis 偏移不受等比缩放影响（见上注）
+    }
+
+    // 4) 脚钉地基准重置（根骨世界位置已随缩放变化）
+    entry._rootPrev = null;
+    entry._ikDirty = true; // 非活动角色也补解一次，保证姿态立即正确
+    return true;
+  }
+
+  /**
+   * 读取角色当前等比缩放（取 x 分量；非均匀缩放不开放）
+   * @param {string} id
+   * @returns {number|null}
+   */
+  getCharacterScale(id) {
+    const entry = this.characters.get(id);
+    if (!entry || !entry.model) return null;
+    return +entry.model.scale.x.toFixed(4);
   }
 
   /**

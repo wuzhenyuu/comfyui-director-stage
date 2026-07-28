@@ -460,6 +460,9 @@ export function setupPointerEvents(domElement) {
     if (e.button !== 0) return;
     // 道具拖拽优先（PropManager 先注册，命中道具时 isDragging=true）
     if (window.__ds?.propManager?.isDragging?.()) return;
+    // P3-5：角色操纵器拖拽中/悬停手柄时，视口拾取让位（TransformControls 接管）
+    const cg = window.__ds?.charGizmo;
+    if (cg && (cg.dragging || cg.hovered)) return;
     const obj = pickAt(e);
     if (!obj) {
       // P3-1：未命中 IK 球/关节时，尝试命中 3D角色身体 → 整体移动
@@ -530,6 +533,12 @@ export function setupPointerEvents(domElement) {
     }
     if (dragObj) {
       moveDrag(e);
+      return;
+    }
+    // P3-5：角色操纵器拖拽中/悬停手柄时，hover 拾取让位
+    const cg = window.__ds?.charGizmo;
+    if (cg && (cg.dragging || cg.hovered)) {
+      window.__ds_hoverJoint = null;
       return;
     }
     const obj = pickAt(e);

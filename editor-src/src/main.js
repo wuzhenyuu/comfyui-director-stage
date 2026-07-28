@@ -40,6 +40,7 @@ import {
   createRouteRuntime, createDefaultRoute, sanitizeRoute, touchRoute,
   prepareRoute, evaluatePreparedRoute, nextRoutePointId,
 } from "./char-route.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { getClipActions } from "./action-presets.js";
 import { serialize as serializePosePresets, restore as restorePosePresets } from "./pose-presets.js";
 import * as panorama from "./panorama.js";
@@ -186,6 +187,178 @@ const boneEditor = createBoneEditor({
     else solveGLB_IK(entry);
   },
 });
+
+/* ============ P3-5：角色视口 Gizmo（移动/旋转/缩放） ============ */
+// 选中（激活）3D角色时显示三轴/旋转环/缩放柄操纵器。
+// 设计要点：
+//  - 不直接 attach 模型（TransformControls 会直接改写变换，绕过 IK 随动）；
+//    而是 attach 一个隐形 handle，objectChange 时把 handle 的变换经
+//    translateExternalCharacter / setCharacterRotation / setCharacterScale
+//    正规入口映射到模型——IK target/pole 随动、脚钉地基准重置、blendFrom 同步全部复用。
+//  - 拖拽手势（dragging-changed true）只压一次 undo（v3 快照含 transform.scale）。
+//  - 骨骼编辑模式下隐藏（骨骼 gizmo 按骨骼模式既有规则接管）；stick 模式/无活动角色/导出中隐藏。
+//  - 旋转模式仅 Y 环（Y 偏航为主，与 F0 setCharacterRotation 同入口；X/Z 走面板折叠区）。
+//  - 缩放模式仅等比柄（XYZ 中心柄），与面板缩放滑条双向同步。
+const charGizmo = (() => {
+  const handle = new THREE.Object3D();
+  handle.name = "CharGizmo_Handle";
+  scene.add(handle);
+
+  const tc = new TransformControls(defaultCamera, viewportCanvas);
+  tc.setSize(0.7);
+  tc.setMode("translate");
+  const helper = typeof tc.getHelper === "function" ? tc.getHelper() : tc;
+  helper.isTransformControls = true; // 契约探测兼容（与 bone-editor gizmo 一致）
+  helper.visible = false;
+  scene.add(helper);
+
+  let mode = "translate";          // translate | rotate | scale
+  let attachedId = null;           // 当前 attach 的角色 id
+  let dragging = false;
+  let dragStart = null;            // { modelPos, handlePos, scale }
+  let exportHidden = false;        // 导出通道期间强制隐藏
+  const _eul = new THREE.Euler();
+  const _modeListeners = [];
+
+  function activeEntry() { return externalManager.getActive?.() || null; }
+
+  /** 可用性：外部角色模式 + 活动角色可见 + 非骨骼模式 + 非导出中 */
+  function available() {
+    const e = activeEntry();
+    return !!(e && e.model && e.model.visible !== false &&
+      characterMode !== "stick" &&
+      !boneEditor.isBoneMode() &&
+      !exportHidden);
+  }
+
+  function attach() {
+    const e = activeEntry();
+    if (!e) return;
+    handle.position.copy(e.model.position);
+    handle.quaternion.copy(e.model.quaternion);
+    handle.scale.set(1, 1, 1);
+    handle.updateMatrixWorld(true);
+    tc.attach(handle);
+    helper.visible = true;
+    attachedId = e.id;
+  }
+
+  function detach() {
+    tc.detach();
+    helper.visible = false;
+    attachedId = null;
+  }
+
+  /** 每帧同步（renderLoop 调用）：相机跟随 / 活动角色切换重挂 / 非拖拽时句柄跟随模型 */
+  function update() {
+    const cam = cameraManager.getActiveCamera()?.camera || defaultCamera;
+    if (tc.camera !== cam) tc.camera = cam;
+    if (!available()) {
+      if (attachedId !== null) detach();
+      else if (helper.visible) helper.visible = false;
+      return;
+    }
+    const e = activeEntry();
+    if (attachedId !== e.id) attach();
+    if (!dragging && attachedId) {
+      // 非拖拽时句柄跟随模型（undo/滑条/路线移动/程序化变换后 gizmo 不错位）
+      handle.position.copy(e.model.position);
+      handle.quaternion.copy(e.model.quaternion);
+      handle.scale.set(1, 1, 1);
+    }
+  }
+
+  /** 拖拽开始（dragging-changed true / 测试钩子）：压一次 undo + 快照基准 */
+  function beginDrag() {
+    const e = activeEntry();
+    if (!e) return false;
+    dragging = true;
+    pushUndo(null); // 手势单次压栈（undo v3 含 scale）
+    dragStart = {
+      modelPos: e.model.position.clone(),
+      handlePos: handle.position.clone(),
+      scale: e.model.scale.x || 1,
+    };
+    return true;
+  }
+
+  /** 拖拽中（objectChange / 测试钩子）：handle 变换 → 正规入口映射到模型 */
+  function applyHandle() {
+    const e = activeEntry();
+    if (!e || !dragStart) return;
+    if (mode === "translate") {
+      const tx = dragStart.modelPos.x + (handle.position.x - dragStart.handlePos.x);
+      const ty = dragStart.modelPos.y + (handle.position.y - dragStart.handlePos.y);
+      const tz = dragStart.modelPos.z + (handle.position.z - dragStart.handlePos.z);
+      translateExternalCharacter(e,
+        tx - e.model.position.x, ty - e.model.position.y, tz - e.model.position.z);
+    } else if (mode === "rotate") {
+      _eul.setFromQuaternion(handle.quaternion, "YXZ");
+      externalManager.setCharacterRotation(e.id, {
+        x: +THREE.MathUtils.radToDeg(_eul.x).toFixed(3),
+        y: +THREE.MathUtils.radToDeg(_eul.y).toFixed(3),
+        z: +THREE.MathUtils.radToDeg(_eul.z).toFixed(3),
+      });
+    } else if (mode === "scale") {
+      // 等比：取 handle.scale.x（缩放模式仅开放 XYZ 中心柄，三分量相等）
+      externalManager.setCharacterScale(e.id, dragStart.scale * handle.scale.x);
+    }
+  }
+
+  /** 拖拽结束（dragging-changed false / 测试钩子） */
+  function endDrag() {
+    dragging = false;
+    dragStart = null;
+    window.dispatchEvent(new CustomEvent("ds-char-gizmo-dragend"));
+  }
+
+  tc.addEventListener("dragging-changed", (ev) => {
+    orbit.enabled = !ev.value;
+    if (ev.value) {
+      if (!beginDrag()) { tc.detach(); dragging = false; orbit.enabled = true; }
+    } else {
+      endDrag();
+    }
+  });
+  tc.addEventListener("objectChange", () => applyHandle());
+
+  function setMode(m) {
+    if (m !== "translate" && m !== "rotate" && m !== "scale") return mode;
+    mode = m;
+    tc.setMode(m);
+    // translate 三轴全开；rotate 仅 Y 环（Y 偏航为主）；scale 仅等比中心柄（XYZ）
+    tc.showX = m === "translate";
+    tc.showY = m !== "scale";
+    tc.showZ = m === "translate";
+    for (const fn of _modeListeners) { try { fn(mode); } catch (_) { /* ignore */ } }
+    return mode;
+  }
+  function getMode() { return mode; }
+
+  function beginExport() {
+    exportHidden = true;
+    if (attachedId !== null) { tc.detach(); }
+    helper.visible = false;
+  }
+  function endExport() {
+    exportHidden = false;
+    update(); // 下一帧前即时恢复
+  }
+
+  return {
+    update, setMode, getMode,
+    beginDrag, applyHandle, endDrag, // 测试钩子（与真实拖拽同一代码路径）
+    beginExport, endExport,
+    handle, // 测试钩子：直接摆 handle 后调 applyHandle
+    onModeChange: (fn) => { if (typeof fn === "function") _modeListeners.push(fn); },
+    get dragging() { return dragging || tc.dragging === true; },
+    get hovered() { return tc.axis != null; }, // 手柄悬停（controls.js 拾取让位用）
+    get attachedId() { return attachedId; },
+    get helperVisible() { return helper.visible === true; },
+    _tc: tc, // 调试/契约探测
+  };
+})();
+window.__dsCharGizmo = charGizmo; // 调试/测试钩子
 
 // 波次2-C：相机轨迹运行时（renderLoop 插入点：boneEditor 之后、actionRuntime 之前）
 const trajectoryRuntime = createTrajectoryRuntime({
@@ -530,6 +703,143 @@ const extRotationUI = (() => {
   return { el: root, sync };
 })();
 window.__dsExtRotationUI = extRotationUI; // 调试/测试钩子
+
+/* ============ P3-5：视口操纵器模式切换 + 缩放滑条（角色属性面板） ============ */
+// 模式按钮：移动/旋转/缩放（快捷键 W/E/R，掌镜激活或输入框聚焦时不生效）；
+// 缩放滑条：0.2~3.0 等比，百分比显示 + 归零按钮；与 gizmo 双向同步（拖拽结束
+// 事件 + 300ms 轮询覆盖 undo/程序化缩放）。
+const extGizmoUI = (() => {
+  const root = document.createElement("div");
+  root.id = "ext-gizmo-panel";
+  root.style.cssText =
+    "border-bottom:1px solid #2a2f3d;padding:10px 12px;display:flex;flex-direction:column;gap:6px;";
+
+  // ── 模式切换行 ──
+  const modeRow = document.createElement("div");
+  modeRow.style.cssText = "display:flex;align-items:center;gap:4px;font-size:12px;color:#c8cddb;";
+  const modeLabel = document.createElement("span");
+  modeLabel.textContent = "🧭 操纵";
+  modeLabel.style.cssText = "font-weight:600;margin-right:2px;";
+  modeRow.appendChild(modeLabel);
+
+  const modeBtns = {};
+  const mkModeBtn = (m, text, title) => {
+    const b = document.createElement("button");
+    b.id = `char-gizmo-mode-${m}`;
+    b.dataset.gizmoMode = m;
+    b.textContent = text;
+    b.title = title;
+    b.style.cssText =
+      "flex:1;padding:3px 6px;font-size:11px;background:#1e2230;border:1px solid #2a2f3d;border-radius:4px;color:#c8cddb;cursor:pointer;";
+    b.addEventListener("click", () => charGizmo.setMode(m));
+    modeRow.appendChild(b);
+    modeBtns[m] = b;
+  };
+  mkModeBtn("translate", "✥ 移动", "视口操纵器：三轴移动（快捷键 W）");
+  mkModeBtn("rotate", "⟳ 旋转", "视口操纵器：Y 旋转环（快捷键 E）");
+  mkModeBtn("scale", "⤢ 缩放", "视口操纵器：等比缩放柄（快捷键 R）");
+  root.appendChild(modeRow);
+
+  function refreshModeBtns() {
+    const cur = charGizmo.getMode();
+    for (const [m, b] of Object.entries(modeBtns)) {
+      const on = m === cur;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      b.style.background = on ? "#2f9e63" : "#1e2230";
+      b.style.color = on ? "#fff" : "#c8cddb";
+    }
+  }
+  charGizmo.onModeChange(refreshModeBtns);
+
+  // ── 缩放滑条行 ──
+  const scaleRow = document.createElement("div");
+  scaleRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:#8a90a0;";
+  const lbl = document.createElement("span");
+  lbl.textContent = "📏 缩放";
+  lbl.style.cssText = "min-width:52px;font-weight:600;color:#c8cddb;";
+  lbl.title = "等比缩放（0.2~3.0 倍），脚底保持贴地";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0.2";
+  slider.max = "3.0";
+  slider.step = "0.01";
+  slider.value = "1";
+  slider.id = "ext-scale";
+  slider.style.cssText = "flex:1;accent-color:#2f9e63;min-width:0;";
+  const val = document.createElement("span");
+  val.id = "ext-scale-val";
+  val.textContent = "100%";
+  val.style.cssText = "min-width:44px;text-align:right;font-variant-numeric:tabular-nums;";
+  const resetBtn = document.createElement("button");
+  resetBtn.id = "ext-scale-reset";
+  resetBtn.textContent = "归零";
+  resetBtn.title = "缩放回到 100%（可撤销）";
+  resetBtn.style.cssText =
+    "padding:2px 8px;font-size:11px;background:#1e2230;border:1px solid #2a2f3d;border-radius:4px;color:#c8cddb;cursor:pointer;";
+  scaleRow.appendChild(lbl);
+  scaleRow.appendChild(slider);
+  scaleRow.appendChild(val);
+  scaleRow.appendChild(resetBtn);
+  root.appendChild(scaleRow);
+
+  let _gestureArmed = false; // 拖拽手势：首个 input 压一次 undo
+  slider.addEventListener("pointerdown", () => { _gestureArmed = true; });
+  slider.addEventListener("keydown", () => { _gestureArmed = true; });
+  slider.addEventListener("input", () => {
+    const entry = externalManager.getActive();
+    if (!entry) return;
+    if (_gestureArmed) { pushUndo(null); _gestureArmed = false; }
+    const s = parseFloat(slider.value) || 1;
+    externalManager.setCharacterScale(entry.id, s);
+    val.textContent = `${Math.round((externalManager.getCharacterScale(entry.id) ?? s) * 100)}%`;
+  });
+  resetBtn.addEventListener("click", () => {
+    const entry = externalManager.getActive();
+    if (!entry) return;
+    pushUndo(null);
+    externalManager.setCharacterScale(entry.id, 1);
+    sync();
+  });
+
+  /** 从模型当前缩放同步滑条/读数（跳过正在拖拽的滑条） */
+  function sync() {
+    const entry = externalManager.getActive();
+    const has = !!(entry && entry.model);
+    slider.disabled = !has;
+    resetBtn.disabled = !has;
+    if (!has) { val.textContent = "—"; return; }
+    const s = externalManager.getCharacterScale(entry.id);
+    if (s == null) return;
+    if (document.activeElement !== slider) slider.value = String(s);
+    val.textContent = `${Math.round(s * 100)}%`;
+  }
+
+  window.addEventListener("ds-external-char-changed", sync);
+  window.addEventListener("ds-char-gizmo-dragend", sync); // gizmo 拖拽结束即同步
+  setInterval(() => { if (root.isConnected) sync(); }, 300);
+
+  charPropsPanelEl.insertBefore(root, charPropsPanelEl.firstChild);
+  refreshModeBtns();
+  sync();
+  return { el: root, sync, refreshModeBtns };
+})();
+window.__dsExtGizmoUI = extGizmoUI; // 调试/测试钩子
+
+// W/E/R 快捷键：切换角色操纵器模式（掌镜激活 / 输入框聚焦 / 骨骼模式时不生效）
+window.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  const tag = (t?.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+  if (cameraOperator?.isActive?.()) return; // WASD 掌镜优先
+  if (boneEditor.isBoneMode()) return;      // 骨骼模式按骨骼 gizmo 既有规则
+  if (e.code === "KeyW") charGizmo.setMode("translate");
+  else if (e.code === "KeyE") charGizmo.setMode("rotate");
+  else if (e.code === "KeyR") charGizmo.setMode("scale");
+  else return;
+  e.preventDefault();
+});
 
 // 场景设置面板
 const sceneSettingsUI = createSceneSettingsPanel();
@@ -1722,6 +2032,7 @@ async function onApply() {
   setStatus("正在导出并上传…", statusEl);
   skeletonHelpers.beginExport(); // P3-0：骨骼线不混入 depth/normal/preview/mask 通道
   trajectoryUI?.gizmo?.beginExport?.(); // V2-F4：轨迹线/点标记不混入导出通道
+  charGizmo.beginExport(); // P3-5：角色操纵器不混入导出通道
   try {
     const [ew, eh] = getExportWH();
     const sceneGz = encodeCurrentSceneGz();
@@ -1782,6 +2093,7 @@ async function onApply() {
     boneEditor.endExport();
     skeletonHelpers.endExport();
     trajectoryUI?.gizmo?.endExport?.();
+    charGizmo.endExport();
     btnApply.disabled = false;
     btnCancel.disabled = false;
   }
@@ -1947,6 +2259,20 @@ const _dsRef = {
     const entry = id ? externalManager.get(id) : externalManager.getActive();
     return entry ? externalManager.getCharacterRotation(entry.id) : null;
   },
+  // P3-5：3D角色整体缩放契约（等比 0.2~3.0；IK/脚钉地/blendFrom 随动）
+  setCharacterScale: (id, s) => {
+    // 兼容省略 id（作用于活动角色）：setCharacterScale(1.5)
+    let entryId = id, scale = s;
+    if (s === undefined) { scale = id; entryId = null; }
+    const entry = entryId ? externalManager.get(entryId) : externalManager.getActive();
+    return entry ? externalManager.setCharacterScale(entry.id, +scale) : false;
+  },
+  getCharacterScale: (id) => {
+    const entry = id ? externalManager.get(id) : externalManager.getActive();
+    return entry ? externalManager.getCharacterScale(entry.id) : null;
+  },
+  // P3-5：角色视口操纵器契约（模式切换/拖拽测试钩子/状态查询）
+  get charGizmo() { return charGizmo; },
   playAction: (entryId, actionId, opts) => actionRuntime.play(entryId, actionId, opts),
   pauseAction: (entryId) => actionRuntime.pause(entryId),
   resumeAction: (entryId) => actionRuntime.resume(entryId),
@@ -2099,6 +2425,7 @@ const _dsRef = {
     skeletonHelpers.beginExport();
     boneEditor.beginExport(); // P2-5：测试钩子路径同样隐藏骨骼标记/Gizmo（成对 begin/end）
     trajectoryUI?.gizmo?.beginExport?.(); // V2-F4：隐藏轨迹/路线 gizmo
+    charGizmo.beginExport(); // P3-5：隐藏角色操纵器
     try {
       return await performBatchExport({
         cameraManager,
@@ -2115,6 +2442,7 @@ const _dsRef = {
       boneEditor.endExport();
       skeletonHelpers.endExport();
       trajectoryUI?.gizmo?.endExport?.();
+      charGizmo.endExport();
     }
   },
 
@@ -2524,6 +2852,8 @@ function renderLoop(ts) {
 
     // P3-2：骨骼编辑模式每帧更新（投影/标记/Gizmo 相机）
     boneEditor.update();
+    // P3-5：角色操纵器每帧同步（相机跟随/活动角色重挂/非拖拽句柄跟随）
+    charGizmo.update();
 
     // 波次2-C：相机轨迹运行时（boneEditor 之后、actionRuntime 之前）
     trajectoryRuntime.tick(dt);
