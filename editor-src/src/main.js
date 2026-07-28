@@ -34,6 +34,7 @@ import { mountCameraGlobals } from "./cameras.js";
 import { mountControlsGlobals } from "./controls.js";
 import { mountThumbnailCapture } from "./thumbnail-capture.js";
 import { createBoneEditor } from "./bone-editor.js";
+import { createTrajectoryRuntime, createTrajectoryUI } from "./trajectory-ui.js";
 import { serialize as serializePosePresets, restore as restorePosePresets } from "./pose-presets.js";
 import * as panorama from "./panorama.js";
 import * as openposeImport from "./openpose-import.js";
@@ -179,6 +180,12 @@ const boneEditor = createBoneEditor({
     else solveGLB_IK(entry);
   },
 });
+
+// 波次2-C：相机轨迹运行时（renderLoop 插入点：boneEditor 之后、actionRuntime 之前）
+const trajectoryRuntime = createTrajectoryRuntime({
+  cameraManager, orbit, externalManager, propManager,
+});
+let trajectoryUI = null; // injectTopbarControls 之后挂载
 
 setupPointerEvents(viewportCanvas, joints);
 setupKeyboardShortcuts(joints, () => {
@@ -1048,6 +1055,13 @@ function _updatePovButton(btn) {
 
 injectTopbarControls();
 
+// 波次2-C：时间轴 + 轨迹编辑面板（自包含 DOM，顶栏按钮在 injectTopbarControls 之后插入）
+trajectoryUI = createTrajectoryUI({
+  runtime: trajectoryRuntime,
+  cameraManager, propManager, externalManager, orbit,
+  showToast,
+});
+
 // P3-2：骨骼编辑 UI（IK/骨骼模式切换 + Gizmo 模式 + 高级平移，挂载到顶栏右侧）
 boneEditor.mountUI();
 
@@ -1115,6 +1129,26 @@ function restoreCharactersFromSnapshot(characters, activeCharId) {
   return manager.characters.size > 0;
 }
 
+/**
+ * 波次2-C：cameras.js 序列化白名单不含 trajectory（该文件波次2-C 不可动），
+ * 轨迹数据由这里在 deserialize 后按 id 手动合回 entry。
+ */
+function _restoreCameraTrajectories(camDataArr) {
+  if (!Array.isArray(camDataArr)) return;
+  let any = false;
+  for (const item of camDataArr) {
+    if (!item || !item.trajectory || typeof item.trajectory !== "object") continue;
+    const entry = cameraManager.cameras.find((c) => c.id === item.id);
+    if (entry) {
+      try {
+        entry.trajectory = JSON.parse(JSON.stringify(item.trajectory));
+        any = true;
+      } catch { /* 非法轨迹数据静默跳过 */ }
+    }
+  }
+  if (any) window.dispatchEvent(new CustomEvent("ds-trajectory-changed"));
+}
+
 function applySceneSnapshot(sceneData) {
   if (!sceneData || typeof sceneData !== "object") return false;
   let restored = false;
@@ -1122,6 +1156,7 @@ function applySceneSnapshot(sceneData) {
   if (Array.isArray(sceneData.cameras) && sceneData.cameras.length > 0) {
     const [ew, eh] = getExportWH();
     cameraManager.deserialize(sceneData.cameras, ew / eh);
+    _restoreCameraTrajectories(sceneData.cameras); // 波次2-C：轨迹字段透传恢复
     restored = true;
   }
 
@@ -1336,9 +1371,15 @@ function buildSceneJSON(sceneGz) {
   }
 
   // 隐藏 widget 不适合存缩略图 dataUrl；重新打开后缩略图会按需重新生成
-  const cameras = Array.isArray(data.cameras)
+  // 波次2-C：cameras.js 序列化白名单不含 trajectory，按 id 合回（collectSceneData 已含时幂等）
+  const _withTraj = (list) => list.map((c) => {
+    if (c.trajectory) return c;
+    const entry = cameraManager.cameras.find((e) => e.id === c.id);
+    return entry?.trajectory ? { ...c, trajectory: JSON.parse(JSON.stringify(entry.trajectory)) } : c;
+  });
+  const cameras = _withTraj(Array.isArray(data.cameras)
     ? data.cameras.map(({ dataUrl, ...cam }) => cam)
-    : cameraManager.serialize().map(({ dataUrl, ...cam }) => cam);
+    : cameraManager.serialize().map(({ dataUrl, ...cam }) => cam));
 
   return {
     ...data,
@@ -1593,6 +1634,17 @@ const _dsRef = {
   // P4：全景图 & OpenPose 导入
   get panorama() { return panorama; },
   get openposeImport() { return openposeImport; },
+
+  // 波次2-C：相机轨迹契约（播放/寻址供导出逐帧调用与测试探针）
+  get trajectoryRuntime() { return trajectoryRuntime; },
+  playTrajectory: () => trajectoryRuntime.play(),
+  pauseTrajectory: () => trajectoryRuntime.pause(),
+  stopTrajectory: () => trajectoryRuntime.stop(),
+  seekTrajectory: (t) => trajectoryRuntime.seekTo(t),
+  getTrajectoryUI: () => trajectoryUI,
+  trajectoryUndo: () => trajectoryUI?.undo?.() ?? false,
+  trajectoryRedo: () => trajectoryUI?.redo?.() ?? false,
+  getTrajectoryUndoDepth: () => trajectoryUI?.getUndoDepth?.() ?? 0,
   togglePanorama: () => panorama.toggle(),
   importOpenPose: async (file) => {
     const img = new Image();
@@ -1902,7 +1954,11 @@ function renderLoop(ts) {
     const ac = cameraManager.getActiveCamera();
 
     // 更新 OrbitControls 的相机（用于关节投影计算）
-    if (panorama.isEnabled()) {
+    // 波次2-C：轨迹播放中 trajectoryRuntime 拥有活动相机位姿，orbit/panorama 均不得写入
+    const trajPlaying = trajectoryRuntime.playing;
+    if (trajPlaying) {
+      // 跳过 orbit.update / 全景锁定
+    } else if (panorama.isEnabled()) {
       // 全景模式：相机锁原点，仅旋转（距离用极微小值保持球坐标正常运算）
       orbit.target.set(0, 1.5, 0);
       orbit.enablePan = false;
@@ -1946,6 +2002,9 @@ function renderLoop(ts) {
 
     // P3-2：骨骼编辑模式每帧更新（投影/标记/Gizmo 相机）
     boneEditor.update();
+
+    // 波次2-C：相机轨迹运行时（boneEditor 之后、actionRuntime 之前）
+    trajectoryRuntime.tick(dt);
 
     // P3-0：动作运行时 —— 采样动作预设，驱动 ikTargets + 骨盆（在 IK 求解前）
     actionRuntime.tick(dt);

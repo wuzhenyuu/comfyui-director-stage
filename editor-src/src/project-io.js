@@ -73,6 +73,11 @@ function collectSceneData() {
       // P3-5：工程文件剥离缩略图 dataUrl——base64 嵌入使工程 JSON 体积膨胀，
       // 且重新导入后缩略图是陈旧画面（与 main.js buildSceneJSON 口径统一）
       const { dataUrl, ...rest } = c;
+      // 波次2-C：cameras.js 序列化白名单不含 trajectory，按 id 从活 entry 合回
+      const entry = ds?.cameraManager?.cameras?.find?.((e) => e.id === c.id);
+      if (entry?.trajectory) {
+        try { rest.trajectory = JSON.parse(JSON.stringify(entry.trajectory)); } catch { /* 忽略 */ }
+      }
       return rest;
     }),
     props: ds?.propManager?.snapshot?.() || [],
@@ -312,6 +317,19 @@ async function _doImport(file) {
       if (ds.cameraManager.deserialize) {
         ds.cameraManager.deserialize(data.cameras);
       }
+      // 波次2-C：轨迹字段透传恢复（cameras.js 白名单不含 trajectory，按 id 合回）
+      let trajAny = false;
+      for (const item of data.cameras) {
+        if (!item?.trajectory || typeof item.trajectory !== "object") continue;
+        const entry = ds.cameraManager.cameras.find((c) => c.id === item.id);
+        if (entry) {
+          try {
+            entry.trajectory = JSON.parse(JSON.stringify(item.trajectory));
+            trajAny = true;
+          } catch { /* 非法轨迹数据静默跳过 */ }
+        }
+      }
+      if (trajAny) window.dispatchEvent(new CustomEvent("ds-trajectory-changed"));
       // P1-fix（infra-1）：deserialize 新建了相机对象，刷新 orbit/propManager 绑定，否则视图冻结
       _syncActiveCameraBinding();
     }
