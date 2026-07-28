@@ -111,6 +111,8 @@ export class ExternalCharacterManager {
     this.activeCharacterId = null;
     /** 外部角色模式（glb/vrm）是否处于显示状态 —— 由 main.js setCharacterMode 驱动 */
     this._modeVisible = false;
+    /** P3-3：骨骼编辑模式抑制 IK 球显示标记（bone-editor.setMode 驱动） */
+    this._ikTargetsSuppressed = false;
     /** restore 进行中标记：main.js 默认角色自动加载据此避免与恢复竞争 */
     this._restorePending = false;
     /** P3-0：ActionRuntime 挂载点（由 action-runtime.js 构造函数赋值），snapshot/restore 动作状态用 */
@@ -529,10 +531,24 @@ export class ExternalCharacterManager {
     }
   }
 
+  /**
+   * P3-3：骨骼编辑模式期间抑制 IK 球显示（bone-editor.setMode 调用）。
+   * 叠加在 _applyEntryVisibility 上：模式可见性/单角色可见性不变，
+   * 退出骨骼模式时恢复。
+   * @param {boolean} flag
+   */
+  setIKTargetsSuppressed(flag) {
+    this._ikTargetsSuppressed = !!flag;
+    for (const entry of this.characters.values()) {
+      this._applyEntryVisibility(entry);
+    }
+  }
+
   _applyEntryVisibility(entry) {
     const show = this._modeVisible && entry.visible !== false;
     if (entry.model) entry.model.visible = show;
-    if (entry.ikTargetsGroup) entry.ikTargetsGroup.visible = show;
+    // P3-3：骨骼编辑模式下 IK 球隐藏（骨骼关节点优先，避免拾取/视觉冲突）
+    if (entry.ikTargetsGroup) entry.ikTargetsGroup.visible = show && !this._ikTargetsSuppressed;
   }
 
   /** 模式切换/批量恢复后，让所有角色在下一帧补解一次 IK */

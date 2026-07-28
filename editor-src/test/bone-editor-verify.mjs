@@ -762,6 +762,84 @@ check("契约13b manifest.masks 只含外部 3D角色 charId（无火柴人混�
   maskIds13.length > 0 && alien13.length === 0,
   `masks=[${maskIds13.join(",")}] external=[${extIds.join(",")}]${alien13.length ? " 混入=" + alien13.join(",") : ""}`);
 
+// ================= 契约 15：bone 模式下 IK 球不可见不可点（P3-3 回归） =================
+// 根因回归：骨骼模式下 IK 球未隐藏/未禁用拾取 → 与骨骼关节点空间重合抢点击、
+// 拖拽劫持（点骨骼却抓了 IK 球，solver 覆写骨骼）。修复后：bone 模式隐藏+禁拾取，退出恢复。
+mark("contract15-ik-suppression");
+// 前提归位：先回 IK 模式，记录 rightArm IK target 屏幕坐标与世界坐标
+await page.evaluate(() => document.querySelector('[data-edit-mode="ik"]')?.click());
+await page.waitForTimeout(600);
+const ikPre = await page.evaluate(() => {
+  const canvas = [...document.querySelectorAll("#viewport canvas")].pop();
+  const r = canvas.getBoundingClientRect();
+  const s = (window.__ds_jointScreen || []).find(
+    (x) => x.obj?.userData?.ikType === "target" && x.obj?.userData?.chainName === "rightArm" && !x.behind);
+  const e = window.__ds.externalCharacters.getAll()[0];
+  const t = e?.ikTargets?.rightArm?.target;
+  return s && t ? {
+    sx: r.left + s.x, sy: r.top + s.y,
+    pos: [t.position.x, t.position.y, t.position.z],
+  } : null;
+});
+check("契约15a IK 模式下 rightArm IK 球可投影定位（前提）", !!ikPre,
+  ikPre ? `screen=(${Math.round(ikPre.sx)},${Math.round(ikPre.sy)})` : "未找到 rightArm target 投影");
+
+await page.evaluate(() => document.querySelector('[data-edit-mode="bone"]')?.click());
+await page.waitForTimeout(600);
+const c15b = await page.evaluate(() =>
+  (window.__ds.externalCharacters.getAll() || []).map((e) => e.ikTargetsGroup?.visible ?? null));
+check("契约15b bone 模式下全部角色 ikTargetsGroup 隐藏",
+  c15b.length > 0 && c15b.every((v) => v === false),
+  `visible=[${c15b.join(",")}]`);
+
+if (ikPre) {
+  // 不可点：pointerdown 在原 IK 球屏幕位置 → 不得选中 IK 球
+  await page.mouse.move(ikPre.sx, ikPre.sy);
+  await page.mouse.down();
+  await page.waitForTimeout(120);
+  const c15c = await page.evaluate(() => ({
+    ikType: window.__ds_selectedJoint?.userData?.ikType ?? null,
+    chain: window.__ds_selectedJoint?.userData?.chainName ?? null,
+  }));
+  await page.mouse.up();
+  check("契约15c bone 模式下 IK 球不可拾取（pointerdown 不选中 IK 球）",
+    c15c.ikType === null,
+    `selectedJoint.ikType=${c15c.ikType}${c15c.chain ? " chain=" + c15c.chain : ""}`);
+
+  // 无拖拽劫持/无写入打架：在重合位置拖拽 → IK target 世界坐标不得变化
+  await page.mouse.move(ikPre.sx, ikPre.sy);
+  await page.mouse.down();
+  for (let i = 1; i <= 5; i++) {
+    await page.mouse.move(ikPre.sx + i * 12, ikPre.sy - i * 4);
+    await page.waitForTimeout(30);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const ikMoved = await page.evaluate((before) => {
+    const t = window.__ds.externalCharacters.getAll()[0]?.ikTargets?.rightArm?.target;
+    if (!t || !before) return null;
+    return Math.hypot(t.position.x - before[0], t.position.y - before[1], t.position.z - before[2]);
+  }, ikPre.pos);
+  check("契约15d bone 模式下拖拽不劫持 IK 球（target 位置不变，solver 不写骨骼）",
+    ikMoved !== null && ikMoved < 0.005,
+    `Δtarget=${ikMoved === null ? "n/a" : ikMoved.toFixed(4) + "m"}`);
+} else {
+  checkSkip("契约15c bone 模式下 IK 球不可拾取", "前提未就绪");
+  checkSkip("契约15d bone 模式下拖拽不劫持 IK 球", "前提未就绪");
+}
+
+// 退出恢复：切回 IK 模式 → IK 球恢复可见、恢复可拾取
+await page.evaluate(() => document.querySelector('[data-edit-mode="ik"]')?.click());
+await page.waitForTimeout(600);
+const c15e = await page.evaluate(() => {
+  const vis = (window.__ds.externalCharacters.getAll() || []).map((e) => e.ikTargetsGroup?.visible ?? null);
+  const pickable = (window.__ds_jointScreen || []).filter((s) => s.obj?.userData?.ikType).length;
+  return { vis, pickable };
+});
+check("契约15e 退出 bone 模式后 IK 球恢复可见+可拾取",
+  c15e.vis.length > 0 && c15e.vis.every((v) => v === true) && c15e.pickable > 0,
+  `visible=[${c15e.vis.join(",")}] pickCacheIK=${c15e.pickable}`);
+
 // ================= 契约 14：截图 + JS 错误 =================
 mark("contract14-screenshot");
 await page.evaluate(() => document.querySelector('[data-edit-mode="bone"]')?.click());

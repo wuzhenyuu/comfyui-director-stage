@@ -2560,7 +2560,10 @@ function renderLoop(ts) {
     // P1.5b 性能优化：IK 不再全员每帧求解。
     // - 活动角色：每帧解（拖拽 IK 球时必须实时）
     // - 非活动角色：仅在 _ikDirty（添加/恢复/模式切换/激活）时补解一次
-    if (characterMode !== "stick") {
+    // P3-3：骨骼编辑模式下整体冻结 IK 求解——骨骼为唯一事实源（target 已由
+    //       syncIKFromBones 反向同步），杜绝 solver 覆写手动骨骼编辑的任何路径；
+    //       退出骨骼模式时 setMode 已 markAllIKDirty，首帧即收敛零漂移。
+    if (characterMode !== "stick" && !boneEditor.isBoneMode()) {
       const activeId = externalManager.activeCharacterId;
       for (const entry of externalManager.characters.values()) {
         if (!entry.model || entry.model.visible === false || !entry.jointMap || !entry.ikTargets) continue;

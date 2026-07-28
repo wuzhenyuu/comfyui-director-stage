@@ -286,6 +286,9 @@ function ndcFromEvent(e, domElement) {
 function getPickableObjects() {
   const objects = [];
 
+  // P3-3：骨骼编辑模式下 IK 球不可拾取（骨骼关节点优先，由 bone-editor 接管点击）
+  if (window.__ds?.boneEditor?.isBoneMode?.()) return objects;
+
   const externalGlbMode = !!window.__ds?.isGLBMode;
   const externalVrmMode = !!window.__ds?.isVRMMode;
   const externalMode = externalGlbMode || externalVrmMode;
@@ -348,10 +351,13 @@ export function setupPointerEvents(domElement) {
       const my = e.clientY - r.top;
       const screen = window.__ds_jointScreen;
       if (screen && screen.length) {
+        // P3-3：骨骼编辑模式下跳过 IK 球拾取缓存（与骨骼关节点空间重合时抢点击）
+        const boneMode = !!window.__ds?.boneEditor?.isBoneMode?.();
         let best = null;
         let bestD = 14; // 14px 命中半径（绘制点最大 12px，留 2px 余量）
         for (const s of screen) {
           if (s.behind || !s.obj) continue;
+          if (boneMode && s.obj.userData?.ikType) continue;
           const d = Math.hypot(s.x - mx, s.y - my);
           if (d < bestD) { bestD = d; best = s.obj; }
         }

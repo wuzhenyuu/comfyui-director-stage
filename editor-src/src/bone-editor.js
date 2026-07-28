@@ -448,6 +448,7 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
       }
       mode = "bone";
       selectJoint(null); // 清掉 IK 球/关节选中，避免高亮串台
+      manager?.setIKTargetsSuppressed?.(true); // P3-3：骨骼模式下隐藏 IK 球（骨骼关节点优先）
       selectedBone = null;
       gizmo.detach();
       gizmoHelper.visible = false;
@@ -458,6 +459,7 @@ export function createBoneEditor({ scene, manager, actionRuntime, skeletonHelper
       // 骨骼 → IK：按当前骨骼刷新 IK target/pole，IK 解算首帧即收敛（姿势不重置）
       syncIKFromBones();
       mode = "ik";
+      manager?.setIKTargetsSuppressed?.(false); // P3-3：恢复 IK 球显示
       selectedBone = null;
       gizmo.detach();
       gizmoHelper.visible = false;
