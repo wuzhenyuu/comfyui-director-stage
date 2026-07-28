@@ -8,6 +8,11 @@ DirectorStageShot（单机位节点）：
   - 从 manifest.cameras[camera_index] 读取该机位的控制图
   - 方便一个场景多节点 = 多机位并联出图
 
+多帧（轨迹导出，manifest version=2 协议扩展）：
+  - cameras[i].files 各通道值为 str | str[]；str[] 视为多帧序列，逐帧加载后
+    堆叠为 IMAGE batch [N,H,W,C]（mask 同理堆叠为 [N,1,H,W] MASK batch）
+  - 单文件 str 行为完全不变（batch=1）；各机位帧数可不同，逐机位独立输出
+
 MASK 处理：
   - masks[] 中每个角色 mask 文件读取为灰度 [1,1,H,W]，torch.cat → [N,1,H,W] MASK batch
   - 无 mask 时输出 torch.zeros((1,1,height,width))
@@ -114,6 +119,28 @@ def _load_image(rel_path, width, height, channel):
         return _blank_image(width, height)
 
 
+def _load_image_frames(value, width, height, channel):
+    """files 通道值 str | str[] → IMAGE batch（多帧序列支持）。
+
+    str：单帧，行为与原 _load_image 完全一致（[1,H,W,3]，batch=1）。
+    str[]：多帧序列，逐帧走 _load_image（含尺寸对齐缩放与空白兜底）后
+    torch.cat 堆叠为 [N,H,W,3]。空列表 / 全非字符串 → 空白单帧。
+    """
+    if isinstance(value, list):
+        frames = [v for v in value if isinstance(v, str) and v.strip()]
+        if not frames:
+            _log("警告：%s 通道的帧列表为空，输出空白图像。" % channel)
+            return _blank_image(width, height)
+        tensors = [_load_image(v, width, height, channel) for v in frames]
+        try:
+            # 每帧已被 _load_image 统一缩放到 (w,h)，cat 必然对齐
+            return torch.cat(tensors, dim=0)  # [N, H, W, 3]
+        except Exception as e:
+            _log("警告：%s 多帧 batch 合并失败：%s，输出空白图像。" % (channel, e))
+            return _blank_image(width, height)
+    return _load_image(value, width, height, channel)
+
+
 def _load_mask(rel_path, width, height, name):
     """按相对路径读取 mask PNG → 灰度 [1, 1, H, W] float tensor。
 
@@ -146,6 +173,25 @@ def _load_mask(rel_path, width, height, name):
             % (name, rel_path, e)
         )
         return None
+
+
+def _load_mask_frames(value, width, height, name):
+    """mask 条目 file 值 str | str[] → [1,1,H,W] tensor 列表（多帧序列支持）。
+
+    str：单帧（0 或 1 个 tensor，沿用 _load_mask 的 None=跳过语义）。
+    str[]：逐帧加载，加载失败的帧跳过，其余按顺序保留。
+    """
+    if isinstance(value, list):
+        results = []
+        for v in value:
+            if not isinstance(v, str):
+                continue
+            t = _load_mask(v, width, height, name)
+            if t is not None:
+                results.append(t)
+        return results
+    t = _load_mask(value, width, height, name)
+    return [t] if t is not None else []
 
 
 def _collect_camera_masks(camera, manifest_data):
@@ -193,10 +239,8 @@ def _build_mask_batch(camera, manifest_data, width, height):
     mask_tensors = []
     for m in masks:
         name = m.get("name") or m.get("charId") or "未知角色"
-        file_path = m.get("file", "")
-        loaded = _load_mask(file_path, width, height, name)
-        if loaded is not None:
-            mask_tensors.append(loaded)
+        # file 支持 str | str[]（多帧序列逐帧堆叠进 batch）
+        mask_tensors.extend(_load_mask_frames(m.get("file", ""), width, height, name))
 
     if len(mask_tensors) == 0:
         return _blank_mask(width, height)
@@ -304,8 +348,13 @@ def _iter_manifest_files(data, camera=None):
         return paths
 
     def _add(v):
+        # str | str[]：数组每帧都纳入文件指纹（IS_CHANGED 缓存语义）
         if isinstance(v, str) and v.strip():
             paths.append(v)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, str) and item.strip():
+                    paths.append(item)
 
     if camera is not None:
         if not isinstance(camera, dict):
@@ -436,10 +485,11 @@ class DirectorStage:
         if not isinstance(files, dict):
             files = {}
 
-        openpose = _load_image(files.get("openpose"), w, h, "openpose")
-        depth = _load_image(files.get("depth"), w, h, "depth")
-        normal = _load_image(files.get("normal"), w, h, "normal")
-        lineart = _load_image(files.get("lineart"), w, h, "lineart")
+        # files 通道值 str | str[]（多帧序列 → IMAGE batch [N,H,W,3]）
+        openpose = _load_image_frames(files.get("openpose"), w, h, "openpose")
+        depth = _load_image_frames(files.get("depth"), w, h, "depth")
+        normal = _load_image_frames(files.get("normal"), w, h, "normal")
+        lineart = _load_image_frames(files.get("lineart"), w, h, "lineart")
 
         # 角色 mask batch（兼容 camera 内嵌 / 顶层 masks 两种布局）
         char_masks = _build_mask_batch(camera, manifest_data, w, h)
@@ -458,8 +508,8 @@ class DirectorStage:
         if not isinstance(files, dict):
             files = {}
 
-        openpose = _load_image(files.get("openpose"), w, h, "openpose")
-        depth = _load_image(files.get("depth"), w, h, "depth")
+        openpose = _load_image_frames(files.get("openpose"), w, h, "openpose")
+        depth = _load_image_frames(files.get("depth"), w, h, "depth")
 
         # 新通道：M1 格式不支持，直接空白图（不走 _load_image，避免重复警告）
         _log("警告：当前为 M1 manifest 格式，不支持 normal/lineart 通道，输出空白图像。（请升级到 M2 格式以启用 normal/lineart/char_masks）")
@@ -565,10 +615,11 @@ class DirectorStageShot:
         if not isinstance(files, dict):
             files = {}
 
-        openpose = _load_image(files.get("openpose"), w, h, "openpose")
-        depth = _load_image(files.get("depth"), w, h, "depth")
-        normal = _load_image(files.get("normal"), w, h, "normal")
-        lineart = _load_image(files.get("lineart"), w, h, "lineart")
+        # files 通道值 str | str[]（多帧序列 → IMAGE batch [N,H,W,3]）
+        openpose = _load_image_frames(files.get("openpose"), w, h, "openpose")
+        depth = _load_image_frames(files.get("depth"), w, h, "depth")
+        normal = _load_image_frames(files.get("normal"), w, h, "normal")
+        lineart = _load_image_frames(files.get("lineart"), w, h, "lineart")
 
         # 角色 mask batch（模块级函数，兼容两种 manifest 布局）
         char_masks = _build_mask_batch(camera, data, w, h)

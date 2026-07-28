@@ -29,6 +29,16 @@
 - ✅ 角色 mask 区域提示：char_masks → RegionalPrompt 链式串联，不同角色区域注入独立提示词
 - ✅ 示例工作流：`multi_camera_storyboard.json`（3机位分镜）、`character_mask_regional.json`（角色分区出图）
 
+### 多帧 manifest（轨迹导出，version=2 协议扩展）
+- ✅ `cameras[i].files` 各通道值从 `str` 扩为 **`str | str[]`**：字符串数组视为多帧序列（沿相机轨迹逐帧导出的控制图）
+- ✅ 后端逐帧加载（复用单帧的路径防护与尺寸对齐）后沿 batch 维堆叠：
+  - `openpose` / `depth` / `normal` / `lineart` → IMAGE batch `[N,H,W,3]`
+  - 角色 mask 条目（`masks[].file` 同样支持 `str | str[]`）→ MASK batch `[N,1,H,W]`
+- ✅ **单文件 `str` 行为完全不变**（batch=1）；数组内帧尺寸不一致时自动缩放到目标宽高对齐
+- ✅ 各机位帧数可不同：多机位 × 多帧时逐机位独立输出（DirectorStage 取 `cameras[0]`，DirectorStageShot 按 `camera_index` 取），机位之间不拼合 batch
+- ✅ 数组中每一帧都纳入 IS_CHANGED 文件指纹（按机位粒度）：任一帧被同名覆盖重导出都会破缓存
+- ✅ 兜底语义：空数组 → 空白单帧；数组含缺失帧 → 该帧为空白、其余帧正常；全部加载失败 → 空白单帧（绝不炸队列）
+
 ## 安装
 
 1. 把本仓库放入 `ComfyUI/custom_nodes/comfyui-director-stage`
@@ -79,6 +89,9 @@ A: 可以。场景数据（scene_gz）随 workflow JSON 一起保存，重新打
 
 **Q: M2 格式的 manifest 和 M1 有什么区别？**
 A: M2（`version: 2`）使用 `cameras[]` 数组，每个相机包含 `files`（多通道控制图）+ `masks`（角色分区遮罩）+ `pos/target/focalMM` 相机参数。M1 格式（`files` 在顶层级）仍然兼容，但新通道（normal/lineart/char_masks/camera_json）会输出空白值。
+
+**Q: `files` 通道值支持多帧序列吗？**
+A: 支持（`str | str[]`，逐帧堆叠为 batch，可直接接视频工作流）——详见上文「多帧 manifest」一节。
 
 **Q: 多机位分镜怎么用？**
 A: 参考 `examples/multi_camera_storyboard.json`：先创建 DirectorStage 节点配好 3 机位场景，再用 3 个 DirectorStageShot 节点（camera_index=0/1/2）分别接 ControlNet+KSampler 并联出图。
