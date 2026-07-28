@@ -21,6 +21,19 @@ POLL_TIMEOUT = 60  # 秒
 
 RESULTS = {"pass": 0, "fail": 0}
 
+# 本脚本产生的 output 产物（P3-8：跑完清理，避免 ds_*.png 在 output 目录累积）
+OUTPUT_CREATED = []
+
+
+def ensure_server():
+    """服务器可达性预检（P3-8）：不可达时友好提示并以退出码 2 退出（环境失败 ≠ 测试失败）。"""
+    try:
+        requests.get(f"{API}/system_stats", timeout=5)
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: 无法连接 ComfyUI 服务器 {API}（{type(e).__name__}: {e}）")
+        print("       请先启动 ComfyUI（默认端口 8388），或用环境变量 COMFYUI_API 指定地址。")
+        sys.exit(2)
+
 
 def expect(cond, label):
     if cond:
@@ -51,6 +64,7 @@ def check_image_content(fpath, expect_size=(512, 512), expect_blank=False):
 # 本脚本创建的文件（cleanup 只删这些）
 CREATED = ["pose_cam1.png", "depth_cam1.png"]
 
+ensure_server()
 os.makedirs(INPUT, exist_ok=True)
 
 # Create test image
@@ -101,6 +115,7 @@ if r.get("prompt_id"):
                 if os.path.exists(fp):
                     print(f"  OK {img['filename']} ({os.path.getsize(fp)}b)")
                     check_image_content(fp, expect_size=(512, 512))
+                    OUTPUT_CREATED.append(fp)
                 else:
                     print(f"  MISSING {img['filename']}")
                     expect(False, f"{img['filename']} 文件存在")
@@ -108,6 +123,10 @@ if r.get("prompt_id"):
 # cleanup：只删本脚本创建的文件
 for f in CREATED:
     p = os.path.join(INPUT, f)
+    if os.path.isfile(p):
+        os.remove(p)
+# cleanup：本脚本产生的 output 产物（P3-8）
+for p in OUTPUT_CREATED:
     if os.path.isfile(p):
         os.remove(p)
 print("Done")

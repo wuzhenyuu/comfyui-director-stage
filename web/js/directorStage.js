@@ -172,24 +172,49 @@ app.registerExtension({
         ? onNodeCreated.apply(this, arguments)
         : undefined;
 
-      this.addWidget("button", "🔄 从 DirectorStage 同步 manifest", null, () => {
+      // P3-fix：scene_gz 在后端 Shot 节点为死参数（保留用于前向兼容），
+      // 隐藏该 widget 避免节点上多一个无用文本框误导用户
+      hideWidget(ensureWidget(this, "scene_gz", ""));
+
+      const DEFAULT_LABEL = "🔄 从 DirectorStage 同步 manifest";
+      // 同步结果的用户可见反馈：临时改写按钮文字，数秒后恢复
+      const flashButton = (btn, text, ms = 3000) => {
+        btn.name = text;
+        if (app.graph) app.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+          btn.name = DEFAULT_LABEL;
+          if (app.graph) app.graph.setDirtyCanvas(true, true);
+        }, ms);
+      };
+
+      const btn = this.addWidget("button", DEFAULT_LABEL, null, () => {
         const graph = app.graph;
         const nodes = graph ? graph._nodes || graph.nodes || [] : [];
-        const stage = nodes.find((n) => n && n.type === "DirectorStage");
-        if (!stage) {
+        const stages = nodes.filter((n) => n && n.type === "DirectorStage");
+        if (stages.length === 0) {
           console.warn(
             "[DirectorStageShot] 画布中没有 DirectorStage 主节点，无法同步 manifest。"
           );
+          flashButton(btn, "⚠️ 未找到主节点");
           return;
         }
+        if (stages.length > 1) {
+          // 多主节点时取第一个，并给出明确提示（原先仅静默取第一个）
+          console.warn(
+            `[DirectorStageShot] 画布中存在 ${stages.length} 个 DirectorStage 主节点，已取第一个（${stages[0].title || "未命名"}）。`
+          );
+        }
+        const stage = stages[0];
         const src = findWidget(stage, "manifest");
         const dst = findWidget(this, "manifest");
         if (!src || !dst) {
           console.warn("[DirectorStageShot] manifest widget 未找到，同步失败。");
+          flashButton(btn, "⚠️ 同步失败");
           return;
         }
         dst.value = src.value;
         if (app.graph) app.graph.setDirtyCanvas(true, true);
+        flashButton(btn, "✅ 已同步 manifest", 2000);
         console.log("[DirectorStageShot] 已从 DirectorStage 同步 manifest。");
       });
 

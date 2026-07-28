@@ -5,6 +5,7 @@
  */
 import { getSceneSettings, setSceneSettings } from "./scene-settings-panel.js";
 import { ExternalCharacterManager } from "./external-characters.js";
+import { clearHistory } from "./undo.js";
 
 /**
  * P1-fix（infra-1）：工程导入后刷新相机绑定。
@@ -68,7 +69,12 @@ function collectSceneData() {
   const data = {
     version: 3,
     timestamp: Date.now(),
-    cameras: ds?.cameraManager?.serialize?.() || [],
+    cameras: (ds?.cameraManager?.serialize?.() || []).map((c) => {
+      // P3-5：工程文件剥离缩略图 dataUrl——base64 嵌入使工程 JSON 体积膨胀，
+      // 且重新导入后缩略图是陈旧画面（与 main.js buildSceneJSON 口径统一）
+      const { dataUrl, ...rest } = c;
+      return rest;
+    }),
     props: ds?.propManager?.snapshot?.() || [],
     sceneSettings: getSceneSettings(),
     focalLength: ds?.getFocalLength?.() || 35,
@@ -193,12 +199,21 @@ async function importProject(file) {
     document.body.appendChild(input);
 
     return new Promise((resolve) => {
+      // P3-8：监听 cancel——用户取消系统文件对话框时 change 不触发，
+      // 不处理则 Promise 永不 resolve 且 input 元素永久残留 DOM（重复点击会累积）
+      const cleanup = () => {
+        if (input.parentNode) input.parentNode.removeChild(input);
+      };
       input.addEventListener("change", async () => {
         const f = input.files[0];
-        document.body.removeChild(input);
+        cleanup();
         if (f) {
           await _doImport(f);
         }
+        resolve();
+      });
+      input.addEventListener("cancel", () => {
+        cleanup();
         resolve();
       });
       input.click();
@@ -337,6 +352,10 @@ async function _doImport(file) {
     // 8) 通知更新
     window.dispatchEvent(new CustomEvent("ds-char-changed"));
     window.dispatchEvent(new CustomEvent("ds-project-loaded"));
+
+    // P3-7：导入成功后清空 undo/redo 栈——导入前的快照引用旧场景状态，
+    // 不清栈时 Ctrl+Z 会把旧姿势"复活"到导入后的同名 entry 上
+    clearHistory();
 
     if (window.__ds?.showToast) {
       window.__ds.showToast("📂 工程已导入", false);

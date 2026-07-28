@@ -86,6 +86,19 @@ A: 参考 `examples/multi_camera_storyboard.json`：先创建 DirectorStage 节�
 **Q: 角色分区提示怎么用？**
 A: 参考 `examples/character_mask_regional.json`：DirectorStage 的 `char_masks` 输出连到 RegionalPrompt 节点的 `region_mask`，配合各角色的独立提示词，实现不同区域不同描述。需要安装 rgthree 或 comfyui_controlnet_aux 插件。
 
+## M3 姿势提取节点：依赖说明（已知事项）
+
+`ExtractPoseFromImage` / `PoseDataToJoints` 依赖 DWPose，按以下顺序探测：
+
+1. pip 版 `controlnet_aux`（优先）
+2. ComfyUI 自定义节点 `comfyui_controlnet_aux` 的 vendored 版本（兜底）
+
+使用 vendored 版本时请注意（上游包的行为，非本插件 bug）：
+
+- `comfyui_controlnet_aux` 的 `__init__.py` 顶层会修改全局环境变量（如 `NPU_DEVICE_COUNT`、`MMCV_WITH_OPS`）并执行全量 `load_nodes()`。正常场景下该包已随 ComfyUI 启动加载、`sys.modules` 命中无额外成本；但若它装在非标准目录名，本插件的延迟导入未命中缓存时会触发第二次完整初始化。
+- vendored 版 `DwposeDetector.from_pretrained` 存在上游 bug（pose 分支把 session 对象赋给文件名字段，导致版本判断永不相等）：若 `comfyui_controlnet_aux` 自带的 DWPose 节点与本插件共用全局 Wholebody 缓存且 det/pose 文件名不同，两侧会互相重建模型（秒级卡顿）。本插件检测器为单例、只调用一次 `from_pretrained`，实际影响有限。
+- 检测器加载有重试上限（连续 3 次瞬时失败）+ 冷却（300 秒）机制；依赖缺失时节点永久降级输出默认 T-pose（`is_default=True`），不会中断队列。
+
 ## 许可
 
 MIT

@@ -268,6 +268,15 @@ export class PropManager {
     const entry = this.props[idx];
     if (this.selectedProp === entry) this.deselectProp();
     this.scene.remove(entry.mesh);
+    // P3-4：释放 2D 线框缓存（scene.js drawMeshEdges 缓存在 userData 上的 EdgesGeometry）。
+    // traverse 覆盖 GLB 导入道具（Group 子树）；不清则反复添加/删除道具持续累积 GPU 几何体
+    entry.mesh.traverse((o) => {
+      if (o.userData && o.userData.__dsEdgeGeometry) {
+        o.userData.__dsEdgeGeometry.dispose();
+        delete o.userData.__dsEdgeGeometry;
+        delete o.userData.__dsEdgeSource;
+      }
+    });
     if (entry.mesh.geometry) entry.mesh.geometry.dispose();
     if (entry.mesh.material) {
       if (Array.isArray(entry.mesh.material)) {

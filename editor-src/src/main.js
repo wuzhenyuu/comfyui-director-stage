@@ -859,12 +859,15 @@ function injectTopbarControls() {
     try {
       const img = new Image();
       const objUrl = URL.createObjectURL(file);
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = reject;
-        img.src = objUrl;
-      });
-      URL.revokeObjectURL(objUrl); // P2-fix：objectURL 用后释放
+      try {
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = objUrl;
+        });
+      } finally {
+        URL.revokeObjectURL(objUrl); // P3-fix：图片解码失败时也释放（原仅在成功路径 revoke）
+      }
       const result = await openposeImport.importPose(
         file, externalManager, img.width, img.height,
         { facingAngle: 0, rootY: 0 }
@@ -1594,8 +1597,11 @@ const _dsRef = {
   importOpenPose: async (file) => {
     const img = new Image();
     const objUrl = URL.createObjectURL(file);
-    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = objUrl; });
-    URL.revokeObjectURL(objUrl); // P2-fix：objectURL 用后释放
+    try {
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = objUrl; });
+    } finally {
+      URL.revokeObjectURL(objUrl); // P3-fix：图片解码失败时也释放（原仅在成功路径 revoke）
+    }
     return openposeImport.importPose(file, externalManager, img.width, img.height);
   },
 };

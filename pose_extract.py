@@ -17,6 +17,7 @@ ExtractPoseFromImage：
 """
 
 import json
+import threading
 import time
 
 import numpy as np
@@ -86,6 +87,10 @@ _dwpose_detector = None       # 加载成功： (detector, flavor)
 _dwpose_dep_missing = False   # 依赖不存在：永久 fallback（重试无意义）
 _dwpose_fail_count = 0        # 瞬时加载失败计数
 _dwpose_last_fail = 0.0       # 上次瞬时失败时间戳
+# P3-fix：全局状态读写锁。当前 ComfyUI PromptExecutor 单事件循环串行执行本无需锁，
+# 但若未来引入并行执行或被外部线程直接调用，无锁会让两线程同时进入模型下载
+#（重复下载数百 MB）。锁开销可忽略，提前防御。
+_dwpose_lock = threading.Lock()
 
 
 class _DependencyMissing(Exception):
@@ -134,32 +139,40 @@ def _get_dwpose_detector():
     - 成功：缓存 (detector, flavor) 并返回；
     - 依赖不存在：永久 fallback，返回 None（重试无意义）；
     - 瞬时加载失败：不缓存，下次调用重试；连续失败达到上限后冷却一段时间。
+
+    线程安全：全局状态读写均在 _dwpose_lock 内（双重检查模式）。
     """
     global _dwpose_detector, _dwpose_dep_missing, _dwpose_fail_count, _dwpose_last_fail
     if _dwpose_detector is not None:
         return _dwpose_detector
     if _dwpose_dep_missing:
         return None
-    if _dwpose_fail_count >= _DWPOSE_MAX_TRANSIENT_FAILS:
-        if (time.time() - _dwpose_last_fail) < _DWPOSE_LOAD_COOLDOWN_SECONDS:
+    with _dwpose_lock:
+        # 拿到锁后双重检查：等待期间另一线程可能已完成加载或标记依赖缺失
+        if _dwpose_detector is not None:
+            return _dwpose_detector
+        if _dwpose_dep_missing:
             return None
-        _dwpose_fail_count = 0  # 冷却结束，放开重试
+        if _dwpose_fail_count >= _DWPOSE_MAX_TRANSIENT_FAILS:
+            if (time.time() - _dwpose_last_fail) < _DWPOSE_LOAD_COOLDOWN_SECONDS:
+                return None
+            _dwpose_fail_count = 0  # 冷却结束，放开重试
 
-    try:
-        _dwpose_detector = _load_dwpose_detector()
-        _dwpose_fail_count = 0
-        _log("DWPose 检测器加载成功（flavor=%s）" % _dwpose_detector[1])
-        return _dwpose_detector
-    except _DependencyMissing as e:
-        _dwpose_dep_missing = True
-        _log("ERROR：DWPose 依赖不存在，姿势提取将始终输出默认 T-pose：%s" % e)
-        return None
-    except Exception as e:
-        _dwpose_fail_count += 1
-        _dwpose_last_fail = time.time()
-        _log("ERROR：DWPose 检测器加载失败（第 %d 次，下次调用将重试）：%s"
-             % (_dwpose_fail_count, e))
-        return None
+        try:
+            _dwpose_detector = _load_dwpose_detector()
+            _dwpose_fail_count = 0
+            _log("DWPose 检测器加载成功（flavor=%s）" % _dwpose_detector[1])
+            return _dwpose_detector
+        except _DependencyMissing as e:
+            _dwpose_dep_missing = True
+            _log("ERROR：DWPose 依赖不存在，姿势提取将始终输出默认 T-pose：%s" % e)
+            return None
+        except Exception as e:
+            _dwpose_fail_count += 1
+            _dwpose_last_fail = time.time()
+            _log("ERROR：DWPose 检测器加载失败（第 %d 次，下次调用将重试）：%s"
+                 % (_dwpose_fail_count, e))
+            return None
 
 
 def _has_valid_keypoints(person):

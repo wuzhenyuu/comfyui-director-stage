@@ -12,6 +12,29 @@ let undoStack = [];
 let redoStack = [];
 
 /**
+ * P3-3-fix：undo/redo 与动作播放互踩。
+ * undo v3 快照不含 action state；若动作（程序化或 clip）继续播放，恢复后下一帧
+ * actionRuntime.tick / mixer 立即重采样覆盖 undo 恢复的 ikTargets/骨盆/骨骼，
+ * undo 形同虚设（骨骼部分 _skipIKFrames=60 也只能撑 1 秒）。
+ * 参照 bone-editor setMode("bone") 的 _pausedByUs 模式：undo/redo 前暂停所有
+ * 播放中动作。与骨骼模式不同，undo 是瞬时操作、无“退出”时机，故保持暂停由用户
+ * 在动作面板手动恢复——undo 语义优先于播放。
+ * @returns {number} 被暂停的动作数
+ */
+function _pausePlayingActionsForUndo() {
+  const manager = window.__ds?.externalCharacters;
+  const rt = manager?.actionRuntime;
+  if (!manager?.characters || !rt) return 0;
+  let n = 0;
+  for (const entry of manager.characters.values()) {
+    if (rt.isPlaying?.(entry.id)) {
+      try { rt.pause(entry.id); n++; } catch (_) { /* ignore */ }
+    }
+  }
+  return n;
+}
+
+/**
  * 获取当前关节快照（向后兼容 M1）
  * @param {THREE.Mesh[]} joints
  * @returns {number[][]}
@@ -218,6 +241,7 @@ export function performUndo(joints) {
     // 3D-only: 保存当前状态到 redo
     const cur = multiCharSnapshot();
     if (cur) redoStack.push(cur);
+    _pausePlayingActionsForUndo(); // P3-3-fix：暂停播放中动作，防止下一帧重采样覆盖恢复结果
     multiCharRestore(snap);
     return true;
   }
@@ -253,6 +277,7 @@ export function performRedo(joints) {
   if (window.__ds?.externalCharacters && snap && snap.v === 3) {
     const cur = multiCharSnapshot();
     if (cur) undoStack.push(cur);
+    _pausePlayingActionsForUndo(); // P3-3-fix：同 performUndo
     multiCharRestore(snap);
     return true;
   }

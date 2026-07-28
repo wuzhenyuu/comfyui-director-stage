@@ -160,6 +160,9 @@ export class ActionRuntime {
     const prev = this.getState(entry.id);
     const speed = opts.speed ?? prev.speed ?? 1;
     const intensity = opts.intensity ?? prev.intensity ?? 1;
+    // P3-1-fix：支持从指定进度起播（resume 兜底 / restoreState 恢复播放进度）。
+    // startTime 与 state.time 同语义（已被 speed 缩放的 clip 本地时间）。
+    const startTime = Math.max(0, Number(opts.startTime) || 0);
 
     // 确保 rig 在站立姿势下已捕获（防护：首个动作就是 clip 时 home 不会错捕成 clip 姿势）
     ensureRig(entry);
@@ -167,18 +170,25 @@ export class ActionRuntime {
     entry.mixer.stopAllAction();
     const action = entry.mixer.clipAction(clip);
     action.reset();
+    if (startTime > 0) {
+      // 循环 clip 取模保相位；LoopOnce 钳制在时长内（超出等同播完，交给 tick 结束检测回 stand）
+      const dur = clip.duration || 0;
+      if (dur > 0) action.time = loop ? startTime % dur : Math.min(startTime, Math.max(0, dur - 1e-3));
+      else action.time = startTime;
+    }
     action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
     action.clampWhenFinished = true;
     action.setEffectiveTimeScale(speed);
     action.setEffectiveWeight(Math.max(0.01, intensity));
     action.fadeIn(BLEND_TIME).play();
+    if (startTime > 0) entry.mixer.update(0); // 立即落到起始帧姿势，避免从 t=0 闪一帧
 
     this.states.set(entry.id, {
       id: clipActionId,
       isClip: true,
       loopClip: loop,
       clipDuration: clip.duration || 0,
-      time: 0,
+      time: startTime,
       playing: true,
       loop,
       speed,
@@ -230,7 +240,8 @@ export class ActionRuntime {
       if (!state._action) {
         const entry = this.manager.get(entryId);
         if (entry) {
-          return this._playClip(entry, state.id, { speed: state.speed, intensity: state.intensity });
+          // P3-1-fix：兜底重建时续上保存的播放进度（原从 t=0 重播丢失进度）
+          return this._playClip(entry, state.id, { speed: state.speed, intensity: state.intensity, startTime: state.time });
         }
         return false;
       }
@@ -376,6 +387,9 @@ export class ActionRuntime {
     for (const [name, pose] of Object.entries(out.chains)) {
       const t = entry.ikTargets?.[name];
       if (!t) continue;
+      // P3-2-fix：samplePose 未写入的链（骨骼命名完全不识别、缺 home 基准的模型）
+      // 不得把零值/未映射的捕获帧坐标 copy 进 ikTargets
+      if (out._written && !out._written[name]) continue;
       if (blending && state.blendFrom.chains[name]) {
         t.target.position.lerpVectors(state.blendFrom.chains[name].target, pose.target, b);
         t.pole.position.lerpVectors(state.blendFrom.chains[name].pole, pose.pole, b);
@@ -464,9 +478,12 @@ export class ActionRuntime {
     // P3-2：clip 动作恢复 — 播放中则重新播放；未播放仅记录状态
     if (isClipActionId(data.id)) {
       if (data.playing) {
+        // P3-1-fix：clip 播放中恢复——从保存的 time 续播（原从 t=0 重播，
+        // 与程序化 loop 续 data.time 的行为不一致）
         this.play(entryId, data.id, {
           speed: Math.max(0.1, Math.min(4, Number(data.speed) || 1)),
           intensity: Math.max(0, Math.min(1, data.intensity === undefined ? 1 : Number(data.intensity))),
+          startTime: Math.max(0, Number(data.time) || 0),
         });
       } else {
         const clipDef = getClipActions(entry).find((a) => a.id === data.id);

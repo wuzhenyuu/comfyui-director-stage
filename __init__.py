@@ -52,11 +52,8 @@ try:
     NODE_CLASS_MAPPINGS.update(_POSE_NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_POSE_NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:
-    # _log 尚未定义，此处直接 print 兑底（与下方 _log 同策略）
-    try:
-        print("[3D导演台] 警告：M3 姿势提取节点注册失败（不影响主节点）：%s" % e)
-    except Exception:
-        pass
+    # _log 在上方已定义，可直接使用（其内部自带编码兜底，绝不抛异常）
+    _log("警告：M3 姿势提取节点注册失败（不影响主节点）：%s" % e)
 
 # 把 web/editor（编辑器 SPA 构建产物）挂载为静态目录：/director_stage/editor
 # index.html 单独路由 + Cache-Control: no-cache —— 防止浏览器缓存旧 HTML

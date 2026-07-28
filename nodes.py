@@ -31,6 +31,10 @@ try:
 except Exception:
     Image = None
 
+# Pillow 10 起 Image.BILINEAR 已 deprecated（Pillow 12 将移除），官方推荐
+# Image.Resampling.BILINEAR；旧版 Pillow 无 Resampling 枚举，getattr 双兼容（P3-fix）。
+_RESAMPLE_BILINEAR = getattr(Image, "Resampling", Image).BILINEAR if Image is not None else None
+
 
 def _log(msg):
     """安全打印：兼容 GBK 等控制台编码，打印本身绝不抛异常。"""
@@ -99,7 +103,7 @@ def _load_image(rel_path, width, height, channel):
                 "警告：%s 图像实际尺寸 %dx%d 与目标 %dx%d 不一致，已缩放对齐。"
                 % (channel, img.size[0], img.size[1], int(width), int(height))
             )
-            img = img.resize((int(width), int(height)), Image.BILINEAR)
+            img = img.resize((int(width), int(height)), _RESAMPLE_BILINEAR)
         arr = np.asarray(img).astype(np.float32) / 255.0
         return torch.from_numpy(arr)[None,]  # [1, H, W, 3]
     except Exception as e:
@@ -132,7 +136,7 @@ def _load_mask(rel_path, width, height, name):
                 "警告：角色「%s」的 mask 实际尺寸 %dx%d 与目标 %dx%d 不一致，已缩放对齐。"
                 % (name, img.size[0], img.size[1], int(width), int(height))
             )
-            img = img.resize((int(width), int(height)), Image.BILINEAR)
+            img = img.resize((int(width), int(height)), _RESAMPLE_BILINEAR)
         arr = np.asarray(img).astype(np.float32) / 255.0
         # [1, 1, H, W] MASK format
         return torch.from_numpy(arr).unsqueeze(0).unsqueeze(0)
@@ -359,6 +363,8 @@ def _hash_manifest_files(hasher, manifest_data, camera=None):
             else:
                 hasher.update(("%s:<missing>;" % rel).encode("utf-8"))
         except Exception:
+            # 瞬时 stat 失败（如文件正被编辑器锁定写入）写入 <error> 标记：仅造成
+            # 一次性缓存失效，文件解锁后哈希自愈，无正确性问题（P3-7 评估结论：不修，仅注释说明）。
             hasher.update(("%s:<error>;" % rel).encode("utf-8"))
 
 
@@ -386,6 +392,8 @@ class DirectorStage:
                 "height": ("INT", {"default": 1024, "min": 64, "max": 4096, "step": 8}),
             },
             "optional": {
+                # scene_gz / scene_json：保留用于前向兼容，当前后端未读取
+                # （场景数据随工作流序列化，仅供前端编辑器恢复场景；后端只解析 manifest）。
                 "scene_gz": ("STRING", {"default": ""}),
                 "manifest": ("STRING", {"default": "{}"}),
                 "scene_json": ("STRING", {"default": "{}"}),
@@ -410,6 +418,7 @@ class DirectorStage:
     # ------------------------------------------------------------------ run
 
     def run(self, width, height, scene_gz="", manifest="{}", scene_json="{}"):
+        # scene_gz / scene_json：保留用于前向兼容，当前未读取（仅 manifest 参与解析）。
         data = _parse_manifest(manifest)
 
         # ---- M2 格式：cameras 数组存在，取第一个 camera ----
@@ -442,19 +451,22 @@ class DirectorStage:
 
     def _run_m1(self, data, width, height):
         """M1 兼容：顶层级 files，新通道输出空白图。"""
+        # P3-fix：与 M2 统一走 _resolve_resolution（manifest 顶层 width/height 优先于
+        # widget 值，并钳制到 [8, 8192]）；M1 无 camera 数据，第二参传 None。
+        w, h = _resolve_resolution(data, None, width, height)
         files = data.get("files", {})
         if not isinstance(files, dict):
             files = {}
 
-        openpose = _load_image(files.get("openpose"), width, height, "openpose")
-        depth = _load_image(files.get("depth"), width, height, "depth")
+        openpose = _load_image(files.get("openpose"), w, h, "openpose")
+        depth = _load_image(files.get("depth"), w, h, "depth")
 
         # 新通道：M1 格式不支持，直接空白图（不走 _load_image，避免重复警告）
         _log("警告：当前为 M1 manifest 格式，不支持 normal/lineart 通道，输出空白图像。（请升级到 M2 格式以启用 normal/lineart/char_masks）")
-        normal = _blank_image(width, height)
-        lineart = _blank_image(width, height)
+        normal = _blank_image(w, h)
+        lineart = _blank_image(w, h)
 
-        char_masks = _blank_mask(width, height)
+        char_masks = _blank_mask(w, h)
         _log("提示：M1 manifest 不支持角色 mask，输出空白 mask。")
 
         camera_json = json.dumps({}, ensure_ascii=False)
@@ -481,6 +493,7 @@ class DirectorStageShot:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                # scene_gz：保留用于前向兼容，当前后端未读取（仅 manifest 参与解析）。
                 "scene_gz": ("STRING", {"default": ""}),
                 "manifest": ("STRING", {"default": "{}"}),
                 "camera_index": ("INT", {"default": 0, "min": 0, "max": 9, "step": 1}),
@@ -506,6 +519,7 @@ class DirectorStageShot:
         return h.hexdigest()
 
     def run(self, scene_gz="", manifest="{}", camera_index=0, width=1024, height=1024):
+        # scene_gz：保留用于前向兼容，当前未读取（仅 manifest 参与解析）。
         data = _parse_manifest(manifest)
 
         cameras = data.get("cameras")

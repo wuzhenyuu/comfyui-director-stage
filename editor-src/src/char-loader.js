@@ -41,9 +41,9 @@ const BONE_PATTERNS = [
   [1,  [/neck/i, /mixamorig:Neck/i, /mixamorigNeck\b/i]],
   // P1-fix：joint 1 只匹配 neck（原 hips/spine 也映射到 1，依赖骨骼数组顺序"先到先赢"，
   // 实测三个内置模型 get(1) 全部命中 Hips/Pelvis 而非 Neck）。
-  // hips/pelvis 拆到独立字符串键 rigRoot，供脚钉地/骨盆查找；spine 拆到 rigSpine。
+  // hips/pelvis 拆到独立字符串键 rigRoot，供脚钉地/骨盆查找。
   ["rigRoot",  [/hips/i, /pelvis/i, /mixamorig:Hips\b/i]],
-  ["rigSpine", [/^spine$/i, /mixamorig:Spine\b/i]],
+  // P3-4-fix：原 rigSpine 键（/^spine$/i 等）只写不读——全仓无消费方（grep 确认），删除避免误导。
   [2,  [/rightshoulder/i, /RightShoulder/i, /mixamorig[:]?RightArm\b/i, /RightArm\b/i, /right[_\s]*upper[_\s]*arm/i, /R[_\s]*UpperArm/i, /upperarm[_\s]*r\b/i]],
   [3,  [/rightforearm/i, /right[_\s]*(forearm|elbow)/i, /mixamorig[:]?RightForeArm\b/i, /RightForeArm/i, /Forearm[_\s]*[rR]\b/i, /[rR][_\s]*Forearm/i, /lowerarm[_\s]*r\b/i]],
   [5,  [/leftshoulder/i, /LeftShoulder/i, /mixamorig[:]?LeftArm\b/i, /LeftArm\b/i, /left[_\s]*upper[_\s]*arm/i, /L[_\s]*UpperArm/i, /upperarm[_\s]*l\b/i]],
@@ -119,7 +119,7 @@ const BONE_PATTERNS = [
 ];
 
 /**
- * 尝试将骨骼名映射到 COCO-18 关节索引（或字符串键 "rigRoot"/"rigSpine"）
+ * 尝试将骨骼名映射到 COCO-18 关节索引（或字符串键 "rigRoot"）
  * @returns {number|string} 未命中返回 -1
  */
 export function mapBoneToJoint(boneName) {
@@ -133,6 +133,12 @@ export function mapBoneToJoint(boneName) {
 
 /**
  * 从 GLB skeleton 提取 COCO-18 骨骼映射
+ *
+ * 映射胜负规则（P3-5）：同一 joint 多根骨骼命中时【先到先赢】（`!mapping.has` 守卫）。
+ * BONE_PATTERNS 行序即优先级，表头模式最精确/最高优先，先命中的骨骼赢得该 joint。
+ * 注意与 vrm-loader.js buildJointMap 的【后到覆盖】规则不同——那边依赖 VRM_TO_COCO
+ * 表内 chest:18 / spine:18 双写的声明顺序取后者，两处规则均有意为之，勿互相"统一"。
+ *
  * @param {THREE.Skeleton} skeleton
  * @returns {{ bones: THREE.Bone[], mapping: Map<number,THREE.Bone>, boneNames: string[] }}
  */
@@ -208,11 +214,7 @@ export async function loadGLBCharacter(url, scene) {
 
   // 提取骨骼映射
   const { mapping: jointMap } = extractSkeletonMapping(skeleton);
-  // P1-fix 验收：joint 1 必须是 Neck，hips/pelvis 在 rigRoot 键
-  console.debug(
-    "[char-loader] jointMap.get(1) =", jointMap.get(1)?.name,
-    "| rigRoot =", jointMap.get("rigRoot")?.name
-  );
+  // （P3-6：原 joint1/rigRoot 验收 console.debug 已随验收完成移除）
 
   // 检测"脱离链条"的末端骨（如 Rigify 扁平骨架：Foot 直接挂在根骨下，
   // 旋转 UpperLeg/LowerLeg 不会带动 Foot，CCD IK 对腿完全失效）。

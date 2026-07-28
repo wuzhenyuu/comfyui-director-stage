@@ -41,10 +41,10 @@ export function getAction(id) {
 /** clip id 前缀（与程序化动作 id 区分） */
 export const CLIP_PREFIX = "clip:";
 
-/** clip 英文名 → 中文显示名 */
+/** clip 英文名 → 中文显示名（查找 key 会先剥掉空格/下划线，故键一律无下划线） */
 const CLIP_NAME_CN = {
   idle: "待机", walk: "走路", run: "跑步", wave: "挥手", jump: "跳跃",
-  agree: "点头", headshake: "摇头", sad_pose: "难过", sneak_pose: "潜行",
+  agree: "点头", headshake: "摇头", sadpose: "难过", sneakpose: "潜行",
   tpose: "T-Pose", dance: "跳舞", sambadance: "桑巴舞",
 };
 

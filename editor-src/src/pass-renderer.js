@@ -244,6 +244,9 @@ export function renderLineartCanvas(depthCanvas, normalCanvas, w, h) {
 
 // ─── Character Mask pass ───
 
+// P3-3：mask 白色材质模块级共享（原每角色×每机位 new 一次且从不 dispose，批量导出累积）
+const _maskWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
 /**
  * 对每个角色生成白色 mask（黑色背景）。
  * @param {THREE.Scene} scene
@@ -289,8 +292,8 @@ export function renderCharacterMasks(scene, camera, renderer, w, h, characters, 
       if (child.visible !== undefined) child.visible = true;
     });
 
-    // Override material to white
-    const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    // Override material to white（P3-3：模块级共享材质，禁止 dispose）
+    const whiteMat = _maskWhiteMat;
     const prevMats = [];
     scene.traverseVisible((child) => {
       if ((child.isMesh || child.isSkinnedMesh) && child.material) {

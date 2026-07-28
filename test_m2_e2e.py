@@ -22,6 +22,19 @@ POLL_TIMEOUT = 60  # 秒
 
 RESULTS = {"pass": 0, "fail": 0}
 
+# 本脚本产生的 output 产物（P3-8：跑完清理，避免 ds_*.png 在 output 目录累积）
+OUTPUT_CREATED = []
+
+
+def ensure_server():
+    """服务器可达性预检（P3-8）：不可达时友好提示并以退出码 2 退出（环境失败 ≠ 测试失败）。"""
+    try:
+        requests.get(f"{API}/system_stats", timeout=5)
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: 无法连接 ComfyUI 服务器 {API}（{type(e).__name__}: {e}）")
+        print("       请先启动 ComfyUI（默认端口 8388），或用环境变量 COMFYUI_API 指定地址。")
+        sys.exit(2)
+
 
 def expect(cond, label):
     if cond:
@@ -50,6 +63,8 @@ def check_image_content(fpath, expect_size=(512, 512), expect_blank=False):
         expect(False, f"{name} 读回失败: {e}")
 
 os.makedirs(INPUT, exist_ok=True)
+
+ensure_server()
 
 # 本脚本创建的文件（cleanup 只删这些）
 test_files = [
@@ -85,6 +100,7 @@ def check_outputs(h, pid, expect_size=(512, 512), expect_blank=False):
             print(f"  Output {k}: {img['filename']} ({os.path.getsize(fp) if exist else 0}b) {'OK' if exist else 'MISSING'}")
             if exist:
                 check_image_content(fp, expect_size, expect_blank)
+                OUTPUT_CREATED.append(fp)
             else:
                 expect(False, f"{img['filename']} 文件存在")
 
@@ -162,11 +178,20 @@ img_buf.seek(0)
 files = {"image": ("test_upload.png", img_buf, "image/png")}
 data = {"subfolder": "director_stage", "type": "input"}
 ur = requests.post(f"{API}/upload/image", files=files, data=data)
-print(f"  Upload: HTTP {ur.status_code} | {ur.json()}")
+# P3-8：错误响应可能不是 JSON（如 4xx/5xx HTML 错误页），直接 .json() 会抛异常
+try:
+    print(f"  Upload: HTTP {ur.status_code} | {ur.json()}")
+except ValueError:
+    print(f"  Upload: HTTP {ur.status_code} | 非 JSON 响应: {ur.text[:200]}")
+    expect(False, f"upload 响应为合法 JSON（HTTP {ur.status_code}）")
 
 # Cleanup：只删本脚本创建的文件
 for f in test_files:
     p = os.path.join(INPUT, f)
+    if os.path.isfile(p):
+        os.remove(p)
+# Cleanup：本脚本产生的 output 产物（P3-8）
+for p in OUTPUT_CREATED:
     if os.path.isfile(p):
         os.remove(p)
 

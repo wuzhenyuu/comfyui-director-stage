@@ -263,6 +263,9 @@ export async function performBatchExport(opts) {
   const manifest = { version: 2, cameras: [], masks: [], sceneGz };
 
   const allCameras = cameraManager.cameras;
+  // P3-1：导出会把每个机位的 cam.aspect 改成导出比例，先快照原始视口比例，
+  // 结束后统一恢复（否则视口渲染沿用错误 aspect 直到下次 resize）
+  const savedAspects = allCameras.map((c) => c.camera.aspect);
   let totalOps = 0;
   let completedOps = 0;
 
@@ -340,28 +343,33 @@ export async function performBatchExport(opts) {
         progress();
       }
 
+      // P3-2：当机位的 depth/normal canvas 缓存——lineart 直接复用，
+      // 避免 depth+normal+lineart 三通道同开时每机位重复渲染两次全场景
+      let depthCvCached = null;
+      let normalCvCached = null;
+
       // ─── Depth ───
       if (enabledPasses.has("depth")) {
-        const depthCv = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        depthCvCached = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
         const filename = `director_depth_${camEntry.id}_${t}.png`;
-        camManifest.files.depth = await uploadCanvas(depthCv, filename);
+        camManifest.files.depth = await uploadCanvas(depthCvCached, filename);
         progress();
       }
 
       // ─── Normal ───
       if (enabledPasses.has("normal")) {
-        const normalCv = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        normalCvCached = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
         const filename = `director_normal_${camEntry.id}_${t}.png`;
-        camManifest.files.normal = await uploadCanvas(normalCv, filename);
+        camManifest.files.normal = await uploadCanvas(normalCvCached, filename);
         progress();
       }
 
       // ─── Lineart ───
       if (enabledPasses.has("lineart")) {
-        // Need depth + normal for lineart; render them as intermediate
-        const depthCv2 = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
-        const normalCv2 = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
-        const lineartCv = renderLineartCanvas(depthCv2, normalCv2, exportW, exportH);
+        // Need depth + normal for lineart; 优先复用当机位已渲染的通道结果
+        if (!depthCvCached) depthCvCached = renderDepthCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        if (!normalCvCached) normalCvCached = renderNormalCanvas(scene, cam, renderer, exportW, exportH, hiddenObjects);
+        const lineartCv = renderLineartCanvas(depthCvCached, normalCvCached, exportW, exportH);
         const filename = `director_lineart_${camEntry.id}_${t}.png`;
         camManifest.files.lineart = await uploadCanvas(lineartCv, filename);
         progress();
@@ -399,6 +407,13 @@ export async function performBatchExport(opts) {
     }
 
   } finally {
+    // P3-1：恢复所有机位的视口 aspect（成功/失败都恢复）
+    allCameras.forEach((c, i) => {
+      if (typeof savedAspects[i] === "number" && c.camera.aspect !== savedAspects[i]) {
+        c.camera.aspect = savedAspects[i];
+        c.camera.updateProjectionMatrix();
+      }
+    });
     restoreGizmo(propManager);
   }
 
